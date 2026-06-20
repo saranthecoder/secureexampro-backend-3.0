@@ -23,6 +23,16 @@ const resultSchema = new mongoose.Schema({
     default: 0
   },
 
+  positiveMarks: {
+    type: Number,
+    default: 0
+  },
+
+  negativeMarks: {
+    type: Number,
+    default: 0
+  },
+
   totalMarks: {
     type: Number,
     default: 0

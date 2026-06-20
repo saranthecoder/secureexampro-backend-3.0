@@ -19,32 +19,59 @@ exports.createExam = async (req, res) => {
       });
     }
 
-    let questions = [];
+    let parsedQuestions = [];
 
     if (req.file) {
       const workbook = XLSX.readFile(req.file.path);
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const data = XLSX.utils.sheet_to_json(sheet);
 
-      questions = data.map(q => ({
-        question: q["Question"],
-        options: {
-          A: q["Option A"],
-          B: q["Option B"],
-          C: q["Option C"],
-          D: q["Option D"]
-        },
-        correctAnswer: q["Correct Answer"],
-        marks: q["Marks"],
-        section: q["Section"] ? q["Section"].trim() : "General",
-        codeSnippet: q["Code Snippet"] ? q["Code Snippet"].toString().trim() : "",
-        imageUrl: q["Image URL"] ? q["Image URL"].toString().trim() : ""
-      }));
+      parsedQuestions = data.map(q => {
+        const corrAns = q["Correct Answer"] ? q["Correct Answer"].toString().trim() : "";
+        const isMulti = corrAns.includes(",");
+        return {
+          question: q["Question"],
+          options: {
+            A: q["Option A"] ? q["Option A"].toString() : "",
+            B: q["Option B"] ? q["Option B"].toString() : "",
+            C: q["Option C"] ? q["Option C"].toString() : "",
+            D: q["Option D"] ? q["Option D"].toString() : ""
+          },
+          correctAnswer: corrAns,
+          marks: q["Marks"] ? Number(q["Marks"]) : 1,
+          negativeMarks: q["Negative Marks"] ? Number(q["Negative Marks"]) : 0,
+          isMultipleCorrect: isMulti,
+          section: q["Section"] ? q["Section"].trim() : "General",
+          codeSnippet: q["Code Snippet"] ? q["Code Snippet"].toString().trim() : "",
+          imageUrl: q["Image URL"] ? q["Image URL"].toString().trim() : ""
+        };
+      });
       fs.unlinkSync(req.file.path);
     } else if (req.body.questions) {
-      questions = typeof req.body.questions === "string"
+      const rawQuestions = typeof req.body.questions === "string"
         ? JSON.parse(req.body.questions)
         : req.body.questions;
+
+      parsedQuestions = rawQuestions.map(q => {
+        const corrAns = q.correctAnswer ? q.correctAnswer.toString().trim() : "";
+        const isMulti = corrAns.includes(",");
+        return {
+          question: q.question,
+          options: {
+            A: q.options?.A ? q.options.A.toString() : "",
+            B: q.options?.B ? q.options.B.toString() : "",
+            C: q.options?.C ? q.options.C.toString() : "",
+            D: q.options?.D ? q.options.D.toString() : ""
+          },
+          correctAnswer: corrAns,
+          marks: q.marks ? Number(q.marks) : 1,
+          negativeMarks: q.negativeMarks ? Number(q.negativeMarks) : 0,
+          isMultipleCorrect: isMulti,
+          section: q.section ? q.section.trim() : "General",
+          codeSnippet: q.codeSnippet ? q.codeSnippet.toString().trim() : "",
+          imageUrl: q.imageUrl ? q.imageUrl.toString().trim() : ""
+        };
+      });
     } else {
       return res.status(400).json({
         message: "Excel file or questions payload is required"
@@ -57,7 +84,7 @@ exports.createExam = async (req, res) => {
       duration,
       startTime,
       endTime,
-      questions,
+      questions: parsedQuestions,
       createdBy: adminEmail,
       cameraMonitor: cameraMonitor === "true" || cameraMonitor === true
     });
@@ -155,6 +182,8 @@ exports.getExamByCode = async (req, res) => {
       section: q.section || "General",
       codeSnippet: q.codeSnippet || "",
       imageUrl: q.imageUrl || "",
+      isMultipleCorrect: q.isMultipleCorrect || false,
+      negativeMarks: q.negativeMarks || 0,
     }));
 
     res.json({
@@ -201,19 +230,49 @@ exports.submitExam = async (req, res) => {
       return res.status(400).json({ message: "Exam ended" });
 
     let score = 0;
+    let positiveMarks = 0;
+    let negativeMarksObtained = 0;
     let totalMarks = 0;
 
     exam.questions.forEach(q => {
-      totalMarks += q.marks;
+      const questionMaxMarks = q.marks || 0;
+      const questionNegMarks = q.negativeMarks || 0;
+      totalMarks += questionMaxMarks;
 
       const ans = answers.find(
         a => a.questionId === q._id.toString()
       );
 
-      if (ans && ans.selectedOption === q.correctAnswer) {
-        score += q.marks;
+      if (!ans || !ans.selectedOption) {
+        return;
+      }
+
+      const selected = ans.selectedOption.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+      const correct = q.correctAnswer.split(",").map(c => c.trim().toUpperCase()).filter(Boolean);
+
+      if (q.isMultipleCorrect || correct.length > 1) {
+        const hasIncorrect = selected.some(opt => !correct.includes(opt));
+        if (hasIncorrect) {
+          negativeMarksObtained += questionNegMarks;
+        } else {
+          if (selected.length === correct.length) {
+            positiveMarks += questionMaxMarks;
+          } else if (selected.length > 0) {
+            const fraction = selected.length / correct.length;
+            positiveMarks += Number((questionMaxMarks * fraction).toFixed(2));
+          }
+        }
+      } else {
+        const isCorrect = selected.length === 1 && selected[0] === correct[0];
+        if (isCorrect) {
+          positiveMarks += questionMaxMarks;
+        } else {
+          negativeMarksObtained += questionNegMarks;
+        }
       }
     });
+
+    score = Number((positiveMarks - negativeMarksObtained).toFixed(2));
 
     // 🔥 Auto-terminate rule (optional)
     let finalTerminated = terminated;
@@ -234,6 +293,8 @@ exports.submitExam = async (req, res) => {
         selectedOption: String
       }],
       score: Number,
+      positiveMarks: Number,
+      negativeMarks: Number,
       totalMarks: Number,
       terminated: {
         type: Boolean,
@@ -277,6 +338,8 @@ exports.submitExam = async (req, res) => {
       studentEmail,
       answers,
       score,
+      positiveMarks,
+      negativeMarks: negativeMarksObtained,
       totalMarks,
       terminated: finalTerminated,
       tabSwitched,
@@ -289,6 +352,8 @@ exports.submitExam = async (req, res) => {
     res.json({
       message: "Exam submitted successfully",
       score,
+      positiveMarks,
+      negativeMarks: negativeMarksObtained,
       totalMarks,
       terminated: finalTerminated,
       storedIn: collectionName
@@ -333,21 +398,26 @@ exports.updateExam = async (req, res) => {
   }
 };
 
-// In-memory store for active screen frames: { "examCode-email": { frame: "...", timestamp: Date.now() } }
+// In-memory store for active screen frames: { "examCode-email": { frame: "...", name: "...", timestamp: Date.now() } }
 const activeScreenFrames = {};
+
+// In-memory store for terminated students: { "examCode-email": true }
+const terminatedStudents = {};
 
 exports.saveScreenFrame = async (req, res) => {
   try {
     const { examCode, email } = req.params;
-    const { frame } = req.body;
+    const { frame, name } = req.body;
 
     const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
     activeScreenFrames[key] = {
       frame,
+      name: name || (activeScreenFrames[key] ? activeScreenFrames[key].name : "Candidate"),
       timestamp: Date.now(),
     };
 
-    res.json({ success: true });
+    const isTerminated = !!terminatedStudents[key];
+    res.json({ success: true, terminated: isTerminated });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -368,6 +438,7 @@ exports.getScreenFrame = async (req, res) => {
 
     res.json({
       frame: data.frame,
+      name: data.name,
       isOffline,
     });
   } catch (error) {
@@ -383,11 +454,12 @@ exports.getAllScreenFrames = async (req, res) => {
 
     for (const key in activeScreenFrames) {
       if (key.startsWith(prefix)) {
-        const email = key.substring(prefix.length);
+        const email = key.substring(prefix.length).toLowerCase();
         const data = activeScreenFrames[key];
         const isOffline = Date.now() - data.timestamp > 18000;
         results[email] = {
           frame: data.frame,
+          name: data.name || "Candidate",
           isOffline,
           timestamp: data.timestamp
         };
@@ -399,6 +471,29 @@ exports.getAllScreenFrames = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+exports.terminateStudent = async (req, res) => {
+  try {
+    const { examCode, email } = req.params;
+    const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
+    terminatedStudents[key] = true;
+    res.json({ success: true, message: "Student marked as terminated successfully" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.checkStudentStatus = async (req, res) => {
+  try {
+    const { examCode, email } = req.params;
+    const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
+    const isTerminated = !!terminatedStudents[key];
+    res.json({ terminated: isTerminated });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
 
 
 

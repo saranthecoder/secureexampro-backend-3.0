@@ -10,6 +10,8 @@ const questionSchema = new mongoose.Schema({
   },
   correctAnswer: String,
   marks: Number,
+  negativeMarks: { type: Number, default: 0 },
+  isMultipleCorrect: { type: Boolean, default: false },
   section: { type: String, default: "General" },
   codeSnippet: { type: String, default: "" },
   imageUrl: { type: String, default: "" }

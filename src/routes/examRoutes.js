@@ -11,7 +11,9 @@ const {
   updateExam,
   saveScreenFrame,
   getScreenFrame,
-  getAllScreenFrames
+  getAllScreenFrames,
+  terminateStudent,
+  checkStudentStatus
 } = require("../controller/examController");
 
 const upload = multer({ dest: "uploads/" });
@@ -30,6 +32,8 @@ router.put("/update/:id", updateExam);
 router.post("/screen-frame/:examCode/:email", saveScreenFrame);
 router.get("/screen-frame/:examCode/:email", getScreenFrame);
 router.get("/screen-frames/:examCode", getAllScreenFrames);
+router.post("/terminate/:examCode/:email", terminateStudent);
+router.get("/status/:examCode/:email", checkStudentStatus);
 
 // 🔥 Student fetch questions
 router.get(
