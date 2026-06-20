@@ -9,7 +9,10 @@ const questionSchema = new mongoose.Schema({
     D: String
   },
   correctAnswer: String,
-  marks: Number
+  marks: Number,
+  section: { type: String, default: "General" },
+  codeSnippet: { type: String, default: "" },
+  imageUrl: { type: String, default: "" }
 });
 
 const examSchema = new mongoose.Schema({
@@ -19,7 +22,8 @@ const examSchema = new mongoose.Schema({
   startTime: Date,
   endTime: Date,
   questions: [questionSchema],
-  createdBy: String   // store admin email
+  createdBy: String,   // store admin email
+  cameraMonitor: { type: Boolean, default: false }
 }, { timestamps: true });
 
 module.exports = mongoose.model("Exam", examSchema);

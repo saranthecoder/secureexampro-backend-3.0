@@ -6,7 +6,7 @@ const fs = require("fs");
 
 exports.createExam = async (req, res) => {
   try {
-    const { title, examCode, duration, startTime, endTime, adminEmail } = req.body;
+    const { title, examCode, duration, startTime, endTime, adminEmail, cameraMonitor } = req.body;
 
     examCodeUpper = examCode.toUpperCase().trim();
 
@@ -19,27 +19,37 @@ exports.createExam = async (req, res) => {
       });
     }
 
-    if (!req.file) {
+    let questions = [];
+
+    if (req.file) {
+      const workbook = XLSX.readFile(req.file.path);
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const data = XLSX.utils.sheet_to_json(sheet);
+
+      questions = data.map(q => ({
+        question: q["Question"],
+        options: {
+          A: q["Option A"],
+          B: q["Option B"],
+          C: q["Option C"],
+          D: q["Option D"]
+        },
+        correctAnswer: q["Correct Answer"],
+        marks: q["Marks"],
+        section: q["Section"] ? q["Section"].trim() : "General",
+        codeSnippet: q["Code Snippet"] ? q["Code Snippet"].toString().trim() : "",
+        imageUrl: q["Image URL"] ? q["Image URL"].toString().trim() : ""
+      }));
+      fs.unlinkSync(req.file.path);
+    } else if (req.body.questions) {
+      questions = typeof req.body.questions === "string"
+        ? JSON.parse(req.body.questions)
+        : req.body.questions;
+    } else {
       return res.status(400).json({
-        message: "Excel file is required"
+        message: "Excel file or questions payload is required"
       });
     }
-
-    const workbook = XLSX.readFile(req.file.path);
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const data = XLSX.utils.sheet_to_json(sheet);
-
-    const questions = data.map(q => ({
-      question: q["Question"],
-      options: {
-        A: q["Option A"],
-        B: q["Option B"],
-        C: q["Option C"],
-        D: q["Option D"]
-      },
-      correctAnswer: q["Correct Answer"],
-      marks: q["Marks"]
-    }));
 
     const exam = await Exam.create({
       title,
@@ -48,10 +58,9 @@ exports.createExam = async (req, res) => {
       startTime,
       endTime,
       questions,
-      createdBy: adminEmail
+      createdBy: adminEmail,
+      cameraMonitor: cameraMonitor === "true" || cameraMonitor === true
     });
-
-    fs.unlinkSync(req.file.path);
 
     res.status(201).json({ message: "Exam created", exam });
 
@@ -97,11 +106,22 @@ exports.getExamByCode = async (req, res) => {
 
     const now = new Date();
 
-    if (now < exam.startTime)
-      return res.status(400).json({ message: "Exam not started yet" });
-
     if (now > exam.endTime)
       return res.status(400).json({ message: "Exam ended" });
+
+    // If not started yet, return metadata only (empty questions array)
+    if (now < exam.startTime) {
+      return res.json({
+        title: exam.title,
+        duration: exam.duration,
+        examCode: exam.examCode,
+        startTime: exam.startTime,
+        endTime: exam.endTime,
+        questions: [],
+        notStartedYet: true,
+        cameraMonitor: exam.cameraMonitor || false
+      });
+    }
 
     // ===============================
     // 🔥 DYNAMIC COLLECTION CHECK
@@ -132,6 +152,9 @@ exports.getExamByCode = async (req, res) => {
       _id: q._id,
       question: q.question,
       options: q.options,
+      section: q.section || "General",
+      codeSnippet: q.codeSnippet || "",
+      imageUrl: q.imageUrl || "",
     }));
 
     res.json({
@@ -139,6 +162,7 @@ exports.getExamByCode = async (req, res) => {
       duration: exam.duration,
       examCode: exam.examCode,
       questions: questionsForStudent,
+      cameraMonitor: exam.cameraMonitor || false
     });
   } catch (error) {
     console.error("Error fetching exam:", error);
@@ -157,7 +181,9 @@ exports.submitExam = async (req, res) => {
       studentEmail,
       terminated = false,
       tabSwitched = false,
-      tabSwitchCount = 0
+      tabSwitchCount = 0,
+      faceWarningCount = 0,
+      faceTurnTerminated = false
     } = req.body;
 
 
@@ -192,7 +218,7 @@ exports.submitExam = async (req, res) => {
     // 🔥 Auto-terminate rule (optional)
     let finalTerminated = terminated;
 
-    if (tabSwitchCount >= 3) {
+    if (tabSwitchCount >= 3 || faceWarningCount >= 5 || faceTurnTerminated) {
       finalTerminated = true;
     }
 
@@ -221,6 +247,14 @@ exports.submitExam = async (req, res) => {
         type: Number,
         default: 0
       },
+      faceWarningCount: {
+        type: Number,
+        default: 0
+      },
+      faceTurnTerminated: {
+        type: Boolean,
+        default: false
+      },
       submittedAt: Date
     }, { timestamps: true });
 
@@ -247,6 +281,8 @@ exports.submitExam = async (req, res) => {
       terminated: finalTerminated,
       tabSwitched,
       tabSwitchCount,
+      faceWarningCount,
+      faceTurnTerminated,
       submittedAt: new Date()
     });
 
@@ -262,6 +298,108 @@ exports.submitExam = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+// 🔥 GET EXAM RESULTS
+exports.getExamResults = async (req, res) => {
+  try {
+    const { examCode } = req.params;
+    const collectionName = `${examCode}_results`;
+    const resultCollection = mongoose.connection.collection(collectionName);
+    const results = await resultCollection.find().toArray();
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// 🔥 UPDATE EXAM DETAILS
+exports.updateExam = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, duration, startTime, endTime } = req.body;
+    const exam = await Exam.findByIdAndUpdate(
+      id,
+      {
+        title,
+        duration: Number(duration),
+        startTime: startTime ? new Date(startTime) : undefined,
+        endTime: endTime ? new Date(endTime) : undefined,
+      },
+      { new: true }
+    );
+    res.json({ message: "Exam updated successfully", exam });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// In-memory store for active screen frames: { "examCode-email": { frame: "...", timestamp: Date.now() } }
+const activeScreenFrames = {};
+
+exports.saveScreenFrame = async (req, res) => {
+  try {
+    const { examCode, email } = req.params;
+    const { frame } = req.body;
+
+    const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
+    activeScreenFrames[key] = {
+      frame,
+      timestamp: Date.now(),
+    };
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.getScreenFrame = async (req, res) => {
+  try {
+    const { examCode, email } = req.params;
+    const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
+    const data = activeScreenFrames[key];
+
+    if (!data) {
+      return res.json({ frame: null, isOffline: true });
+    }
+
+    // Mark as offline if no frame was sent in the last 18 seconds
+    const isOffline = Date.now() - data.timestamp > 18000;
+
+    res.json({
+      frame: data.frame,
+      isOffline,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.getAllScreenFrames = async (req, res) => {
+  try {
+    const { examCode } = req.params;
+    const prefix = `${examCode.toUpperCase()}-`;
+    const results = {};
+
+    for (const key in activeScreenFrames) {
+      if (key.startsWith(prefix)) {
+        const email = key.substring(prefix.length);
+        const data = activeScreenFrames[key];
+        const isOffline = Date.now() - data.timestamp > 18000;
+        results[email] = {
+          frame: data.frame,
+          isOffline,
+          timestamp: data.timestamp
+        };
+      }
+    }
+
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
 
 
 

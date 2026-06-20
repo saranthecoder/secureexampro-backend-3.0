@@ -6,7 +6,12 @@ const {
   createExam,
   submitExam,
   getExamByCode,
-    getAllExams
+  getAllExams,
+  getExamResults,
+  updateExam,
+  saveScreenFrame,
+  getScreenFrame,
+  getAllScreenFrames
 } = require("../controller/examController");
 
 const upload = multer({ dest: "uploads/" });
@@ -18,6 +23,13 @@ router.post(
 );
 
 router.get("/all", getAllExams);
+router.get("/results/:examCode", getExamResults);
+router.put("/update/:id", updateExam);
+
+// 🔥 Screen Frame streaming routes
+router.post("/screen-frame/:examCode/:email", saveScreenFrame);
+router.get("/screen-frame/:examCode/:email", getScreenFrame);
+router.get("/screen-frames/:examCode", getAllScreenFrames);
 
 // 🔥 Student fetch questions
 router.get(
