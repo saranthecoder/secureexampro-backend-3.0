@@ -398,21 +398,20 @@ exports.updateExam = async (req, res) => {
   }
 };
 
-// In-memory store for active screen frames: { "examCode-email": { frame: "...", name: "...", timestamp: Date.now() } }
-const activeScreenFrames = {};
+// In-memory store for active candidate metadata: { "examCode-email": { name: "...", timestamp: Date.now() } }
+const activeCandidates = {};
 
 // In-memory store for terminated students: { "examCode-email": true }
 const terminatedStudents = {};
 
-exports.saveScreenFrame = async (req, res) => {
+exports.heartbeat = async (req, res) => {
   try {
     const { examCode, email } = req.params;
-    const { frame, name } = req.body;
+    const { name } = req.body;
 
     const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
-    activeScreenFrames[key] = {
-      frame,
-      name: name || (activeScreenFrames[key] ? activeScreenFrames[key].name : "Candidate"),
+    activeCandidates[key] = {
+      name: name || (activeCandidates[key] ? activeCandidates[key].name : "Candidate"),
       timestamp: Date.now(),
     };
 
@@ -423,42 +422,19 @@ exports.saveScreenFrame = async (req, res) => {
   }
 };
 
-exports.getScreenFrame = async (req, res) => {
-  try {
-    const { examCode, email } = req.params;
-    const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
-    const data = activeScreenFrames[key];
-
-    if (!data) {
-      return res.json({ frame: null, isOffline: true });
-    }
-
-    // Mark as offline if no frame was sent in the last 18 seconds
-    const isOffline = Date.now() - data.timestamp > 18000;
-
-    res.json({
-      frame: data.frame,
-      name: data.name,
-      isOffline,
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-};
-
-exports.getAllScreenFrames = async (req, res) => {
+exports.getActiveCandidates = async (req, res) => {
   try {
     const { examCode } = req.params;
     const prefix = `${examCode.toUpperCase()}-`;
     const results = {};
 
-    for (const key in activeScreenFrames) {
+    for (const key in activeCandidates) {
       if (key.startsWith(prefix)) {
         const email = key.substring(prefix.length).toLowerCase();
-        const data = activeScreenFrames[key];
-        const isOffline = Date.now() - data.timestamp > 18000;
+        const data = activeCandidates[key];
+        // Mark candidate as offline if no heartbeat was received in the last 15 seconds
+        const isOffline = Date.now() - data.timestamp > 15000;
         results[email] = {
-          frame: data.frame,
           name: data.name || "Candidate",
           isOffline,
           timestamp: data.timestamp
@@ -493,6 +469,7 @@ exports.checkStudentStatus = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
 
 
 

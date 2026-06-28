@@ -9,9 +9,8 @@ const {
   getAllExams,
   getExamResults,
   updateExam,
-  saveScreenFrame,
-  getScreenFrame,
-  getAllScreenFrames,
+  heartbeat,
+  getActiveCandidates,
   terminateStudent,
   checkStudentStatus
 } = require("../controller/examController");
@@ -28,10 +27,9 @@ router.get("/all", getAllExams);
 router.get("/results/:examCode", getExamResults);
 router.put("/update/:id", updateExam);
 
-// 🔥 Screen Frame streaming routes
-router.post("/screen-frame/:examCode/:email", saveScreenFrame);
-router.get("/screen-frame/:examCode/:email", getScreenFrame);
-router.get("/screen-frames/:examCode", getAllScreenFrames);
+// 🔥 Active candidate heartbeat & monitoring routes
+router.post("/heartbeat/:examCode/:email", heartbeat);
+router.get("/active-candidates/:examCode", getActiveCandidates);
 router.post("/terminate/:examCode/:email", terminateStudent);
 router.get("/status/:examCode/:email", checkStudentStatus);
 
