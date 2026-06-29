@@ -9,6 +9,7 @@ const {
   getAllExams,
   getExamResults,
   updateExam,
+  deleteExam,
   heartbeat,
   getActiveCandidates,
   terminateStudent,
@@ -26,6 +27,7 @@ router.post(
 router.get("/all", getAllExams);
 router.get("/results/:examCode", getExamResults);
 router.put("/update/:id", updateExam);
+router.delete("/delete/:id", deleteExam);
 
 // 🔥 Active candidate heartbeat & monitoring routes
 router.post("/heartbeat/:examCode/:email", heartbeat);

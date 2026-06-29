@@ -4,6 +4,8 @@ const Exam = require("../models/Exam");
 const XLSX = require("xlsx");
 const fs = require("fs");
 
+const activeSubmissions = new Set();
+
 exports.createExam = async (req, res) => {
   try {
     const { title, examCode, duration, startTime, endTime, adminEmail, cameraMonitor } = req.body;
@@ -26,25 +28,71 @@ exports.createExam = async (req, res) => {
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const data = XLSX.utils.sheet_to_json(sheet);
 
-      parsedQuestions = data.map(q => {
-        const corrAns = q["Correct Answer"] ? q["Correct Answer"].toString().trim() : "";
+      let currentQuestion = null;
+
+      data.forEach(q => {
+        // Find question text dynamically across possible naming variants and blank Excel headers
+        let questionText = "";
+        const keys = Object.keys(q);
+        const qKey = keys.find(k => k.toLowerCase().trim() === "question");
+
+        if (qKey) {
+          questionText = q[qKey].toString().trim();
+        } else if (q["__EMPTY"]) {
+          questionText = q["__EMPTY"].toString().trim();
+        } else {
+          const emptyKey = keys.find(k => k.startsWith("__EMPTY"));
+          if (emptyKey) {
+            questionText = q[emptyKey].toString().trim();
+          }
+        }
+
+        // Case-insensitive key matching for option headers and attributes
+        const optAKey = keys.find(k => k.toLowerCase().trim() === "option a");
+        const optBKey = keys.find(k => k.toLowerCase().trim() === "option b");
+        const optCKey = keys.find(k => k.toLowerCase().trim() === "option c");
+        const optDKey = keys.find(k => k.toLowerCase().trim() === "option d");
+        const ansKey = keys.find(k => k.toLowerCase().trim() === "correct answer");
+        const marksKey = keys.find(k => k.toLowerCase().trim() === "marks");
+        const negKey = keys.find(k => k.toLowerCase().trim() === "negative marks");
+        const secKey = keys.find(k => k.toLowerCase().trim() === "section");
+        const codeKey = keys.find(k => k.toLowerCase().trim() === "code snippet");
+        const imgKey = keys.find(k => k.toLowerCase().trim() === "image url");
+
+        // If Question is blank but we have a previous question, merge the options/answer details
+        if (!questionText && currentQuestion) {
+          if (optAKey && q[optAKey] !== undefined && q[optAKey] !== null) currentQuestion.options.A = q[optAKey].toString().trim();
+          if (optBKey && q[optBKey] !== undefined && q[optBKey] !== null) currentQuestion.options.B = q[optBKey].toString().trim();
+          if (optCKey && q[optCKey] !== undefined && q[optCKey] !== null) currentQuestion.options.C = q[optCKey].toString().trim();
+          if (optDKey && q[optDKey] !== undefined && q[optDKey] !== null) currentQuestion.options.D = q[optDKey].toString().trim();
+          if (ansKey && q[ansKey] !== undefined && q[ansKey] !== null) {
+            currentQuestion.correctAnswer = q[ansKey].toString().trim();
+            currentQuestion.isMultipleCorrect = currentQuestion.correctAnswer.includes(",");
+          }
+          return;
+        }
+
+        const corrAns = ansKey && q[ansKey] !== undefined && q[ansKey] !== null ? q[ansKey].toString().trim() : "";
         const isMulti = corrAns.includes(",");
-        return {
-          question: q["Question"],
+
+        currentQuestion = {
+          question: questionText || "Blank Question text",
           options: {
-            A: q["Option A"] ? q["Option A"].toString() : "",
-            B: q["Option B"] ? q["Option B"].toString() : "",
-            C: q["Option C"] ? q["Option C"].toString() : "",
-            D: q["Option D"] ? q["Option D"].toString() : ""
+            A: optAKey && q[optAKey] !== undefined && q[optAKey] !== null ? q[optAKey].toString().trim() : "",
+            B: optBKey && q[optBKey] !== undefined && q[optBKey] !== null ? q[optBKey].toString().trim() : "",
+            C: optCKey && q[optCKey] !== undefined && q[optCKey] !== null ? q[optCKey].toString().trim() : "",
+            D: optDKey && q[optDKey] !== undefined && q[optDKey] !== null ? q[optDKey].toString().trim() : ""
           },
           correctAnswer: corrAns,
-          marks: q["Marks"] ? Number(q["Marks"]) : 1,
-          negativeMarks: q["Negative Marks"] ? Number(q["Negative Marks"]) : 0,
+          marks: marksKey && q[marksKey] !== undefined && q[marksKey] !== null ? Number(q[marksKey]) : 1,
+          negativeMarks: negKey && q[negKey] !== undefined && q[negKey] !== null ? Number(q[negKey]) : 0,
           isMultipleCorrect: isMulti,
-          section: q["Section"] ? q["Section"].trim() : "General",
-          codeSnippet: q["Code Snippet"] ? q["Code Snippet"].toString().trim() : "",
-          imageUrl: q["Image URL"] ? q["Image URL"].toString().trim() : ""
+          section: secKey && q[secKey] !== undefined && q[secKey] !== null ? q[secKey].toString().trim() : "General",
+          codeSnippet: codeKey && q[codeKey] !== undefined && q[codeKey] !== null ? q[codeKey].toString().trim() : "",
+          imageUrl: imgKey && q[imgKey] !== undefined && q[imgKey] !== null ? q[imgKey].toString().trim() : ""
         };
+
+        parsedQuestions.push(currentQuestion);
       });
       fs.unlinkSync(req.file.path);
     } else if (req.body.questions) {
@@ -136,6 +184,9 @@ exports.getExamByCode = async (req, res) => {
     if (now > exam.endTime)
       return res.status(400).json({ message: "Exam ended" });
 
+    const hasNegativeMarking = exam.questions.some((q) => (q.negativeMarks || 0) > 0);
+    const maxNegativeMark = hasNegativeMarking ? Math.max(...exam.questions.map(q => q.negativeMarks || 0)) : 0;
+
     // If not started yet, return metadata only (empty questions array)
     if (now < exam.startTime) {
       return res.json({
@@ -146,7 +197,9 @@ exports.getExamByCode = async (req, res) => {
         endTime: exam.endTime,
         questions: [],
         notStartedYet: true,
-        cameraMonitor: exam.cameraMonitor || false
+        cameraMonitor: exam.cameraMonitor || false,
+        hasNegativeMarking,
+        maxNegativeMark
       });
     }
 
@@ -191,7 +244,9 @@ exports.getExamByCode = async (req, res) => {
       duration: exam.duration,
       examCode: exam.examCode,
       questions: questionsForStudent,
-      cameraMonitor: exam.cameraMonitor || false
+      cameraMonitor: exam.cameraMonitor || false,
+      hasNegativeMarking,
+      maxNegativeMark
     });
   } catch (error) {
     console.error("Error fetching exam:", error);
@@ -201,13 +256,21 @@ exports.getExamByCode = async (req, res) => {
 
 
 exports.submitExam = async (req, res) => {
-  try {
-    const { examCode } = req.params;
+  const { examCode } = req.params;
+  const { studentEmail } = req.body;
+  const lockKey = `${examCode}_${studentEmail}`;
 
+  if (studentEmail) {
+    if (activeSubmissions.has(lockKey)) {
+      return res.status(400).json({ message: "Already submitted" });
+    }
+    activeSubmissions.add(lockKey);
+  }
+
+  try {
     const {
       answers,
       studentName,
-      studentEmail,
       terminated = false,
       tabSwitched = false,
       tabSwitchCount = 0,
@@ -330,8 +393,10 @@ exports.submitExam = async (req, res) => {
       studentEmail
     });
 
-    if (alreadySubmitted)
+    if (alreadySubmitted) {
+      if (studentEmail) activeSubmissions.delete(lockKey);
       return res.status(400).json({ message: "Already submitted" });
+    }
 
     await DynamicResult.create({
       studentName,
@@ -349,6 +414,8 @@ exports.submitExam = async (req, res) => {
       submittedAt: new Date()
     });
 
+    if (studentEmail) activeSubmissions.delete(lockKey);
+
     res.json({
       message: "Exam submitted successfully",
       score,
@@ -360,6 +427,7 @@ exports.submitExam = async (req, res) => {
     });
 
   } catch (error) {
+    if (studentEmail) activeSubmissions.delete(lockKey);
     res.status(500).json({ error: error.message });
   }
 };
@@ -393,6 +461,29 @@ exports.updateExam = async (req, res) => {
       { new: true }
     );
     res.json({ message: "Exam updated successfully", exam });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// 🔥 DELETE EXAM
+exports.deleteExam = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const exam = await Exam.findByIdAndDelete(id);
+    if (!exam) {
+      return res.status(404).json({ message: "Exam not found" });
+    }
+
+    // Drop results collection if it exists
+    const collectionName = `${exam.examCode}_results`;
+    try {
+      await mongoose.connection.db.dropCollection(collectionName);
+    } catch (e) {
+      // Ignore if collection doesn't exist
+    }
+
+    res.json({ message: "Exam deleted successfully" });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
