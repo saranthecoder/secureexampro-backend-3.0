@@ -187,21 +187,7 @@ exports.getExamByCode = async (req, res) => {
     const hasNegativeMarking = exam.questions.some((q) => (q.negativeMarks || 0) > 0);
     const maxNegativeMark = hasNegativeMarking ? Math.max(...exam.questions.map(q => q.negativeMarks || 0)) : 0;
 
-    // If not started yet, return metadata only (empty questions array)
-    if (now < exam.startTime) {
-      return res.json({
-        title: exam.title,
-        duration: exam.duration,
-        examCode: exam.examCode,
-        startTime: exam.startTime,
-        endTime: exam.endTime,
-        questions: [],
-        notStartedYet: true,
-        cameraMonitor: exam.cameraMonitor || false,
-        hasNegativeMarking,
-        maxNegativeMark
-      });
-    }
+
 
     // ===============================
     // 🔥 DYNAMIC COLLECTION CHECK
