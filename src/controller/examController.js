@@ -26,7 +26,7 @@ exports.createExam = async (req, res) => {
     if (req.file) {
       const workbook = XLSX.readFile(req.file.path);
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const data = XLSX.utils.sheet_to_json(sheet);
+      const data = XLSX.utils.sheet_to_json(sheet, { raw: false });
 
       let currentQuestion = null;
 
