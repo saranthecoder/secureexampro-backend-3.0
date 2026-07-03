@@ -277,7 +277,8 @@ exports.submitExam = async (req, res) => {
       tabSwitched = false,
       tabSwitchCount = 0,
       faceWarningCount = 0,
-      faceTurnTerminated = false
+      faceTurnTerminated = false,
+      terminatedByAdmin = false
     } = req.body;
 
 
@@ -340,7 +341,7 @@ exports.submitExam = async (req, res) => {
     score = Number((positiveMarks - negativeMarksObtained).toFixed(2));
 
     // 🔥 Auto-terminate rule (optional)
-    let finalTerminated = terminated;
+    let finalTerminated = terminated || terminatedByAdmin;
 
     if (tabSwitchCount >= 3 || faceWarningCount >= 5 || faceTurnTerminated) {
       finalTerminated = true;
@@ -381,6 +382,10 @@ exports.submitExam = async (req, res) => {
         type: Boolean,
         default: false
       },
+      terminatedByAdmin: {
+        type: Boolean,
+        default: false
+      },
       submittedAt: Date
     }, { timestamps: true });
 
@@ -413,6 +418,7 @@ exports.submitExam = async (req, res) => {
       tabSwitchCount,
       faceWarningCount,
       faceTurnTerminated,
+      terminatedByAdmin,
       submittedAt: new Date()
     });
 
@@ -546,6 +552,59 @@ exports.terminateStudent = async (req, res) => {
     const { examCode, email } = req.params;
     const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
     terminatedStudents[key] = true;
+
+    // Persist a database record in ${examCode}_results to ensure persistence
+    const exam = await Exam.findOne({ examCode: examCode.toUpperCase() });
+    if (exam) {
+      const candName = activeCandidates[key]?.name || "Candidate";
+      const totalMarks = exam.questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+
+      const resultSchema = new mongoose.Schema({
+        studentName: { type: String, required: true },
+        studentEmail: String,
+        answers: [{
+          questionId: mongoose.Schema.Types.ObjectId,
+          selectedOption: String
+        }],
+        score: Number,
+        positiveMarks: Number,
+        negativeMarks: Number,
+        totalMarks: Number,
+        terminated: { type: Boolean, default: false },
+        tabSwitched: { type: Boolean, default: false },
+        tabSwitchCount: { type: Number, default: 0 },
+        faceWarningCount: { type: Number, default: 0 },
+        faceTurnTerminated: { type: Boolean, default: false },
+        terminatedByAdmin: { type: Boolean, default: false },
+        submittedAt: Date
+      }, { timestamps: true });
+
+      const collectionName = `${examCode.toUpperCase()}_results`;
+      const DynamicResult =
+        mongoose.models[collectionName] ||
+        mongoose.model(collectionName, resultSchema, collectionName);
+
+      const alreadySubmitted = await DynamicResult.findOne({ studentEmail: email.toLowerCase() });
+      if (!alreadySubmitted) {
+        await DynamicResult.create({
+          studentName: candName,
+          studentEmail: email.toLowerCase(),
+          answers: [],
+          score: 0,
+          positiveMarks: 0,
+          negativeMarks: 0,
+          totalMarks: totalMarks,
+          terminated: true,
+          tabSwitched: false,
+          tabSwitchCount: 0,
+          faceWarningCount: 0,
+          faceTurnTerminated: false,
+          terminatedByAdmin: true,
+          submittedAt: new Date()
+        });
+      }
+    }
+
     res.json({ success: true, message: "Student marked as terminated successfully" });
   } catch (error) {
     res.status(500).json({ error: error.message });
