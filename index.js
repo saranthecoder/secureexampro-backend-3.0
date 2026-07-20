@@ -10,7 +10,13 @@ const cors = require("cors");
 
 connectDB();
 
-app.use(cors());
+app.use(cors({
+  origin: "*",
+  methods: "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS",
+  credentials: true,
+  allowedHeaders: "Origin,X-Requested-With,Content-Type,Accept,Authorization"
+}));
+app.options("*", cors());
 app.use(express.json({ limit: "10mb" }));
 
 app.use("/api/auth", authRoutes);
