@@ -13,6 +13,10 @@ const resultSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  studentRollNumber: {
+    type: String,
+    default: ""
+  },
   answers: [{
     questionId: mongoose.Schema.Types.ObjectId,
     selectedOption: String
@@ -55,6 +59,35 @@ const resultSchema = new mongoose.Schema({
     default: 0
   },
 
+  faceWarningCount: {
+    type: Number,
+    default: 0
+  },
+
+  noiseWarningCount: {
+    type: Number,
+    default: 0
+  },
+
+  internetIssueCount: {
+    type: Number,
+    default: 0
+  },
+
+  fullScreenExitCount: {
+    type: Number,
+    default: 0
+  },
+
+  screenShareViolationCount: {
+    type: Number,
+    default: 0
+  },
+
+  isEmailed: {
+    type: Boolean,
+    default: false
+  },
   submittedAt: Date
 
 }, { timestamps: true });

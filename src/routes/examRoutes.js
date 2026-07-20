@@ -13,7 +13,11 @@ const {
   heartbeat,
   getActiveCandidates,
   terminateStudent,
-  checkStudentStatus
+  checkStudentStatus,
+  updateProctorConfig,
+  sendResultEmail,
+  sendAllResultsEmail,
+  resetStudentAttempt
 } = require("../controller/examController");
 
 const upload = multer({ dest: "uploads/" });
@@ -28,6 +32,10 @@ router.get("/all", getAllExams);
 router.get("/results/:examCode", getExamResults);
 router.put("/update/:id", updateExam);
 router.delete("/delete/:id", deleteExam);
+router.put("/proctor-config/:examCode", updateProctorConfig);
+router.post("/send-result-email/:examCode", sendResultEmail);
+router.post("/send-all-results/:examCode", sendAllResultsEmail);
+router.post("/reset-attempt/:examCode", resetStudentAttempt);
 
 // 🔥 Active candidate heartbeat & monitoring routes
 router.post("/heartbeat/:examCode/:email", heartbeat);
