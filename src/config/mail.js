@@ -1,18 +1,16 @@
 const nodemailer = require("nodemailer");
 
-// Primary: Brevo HTTP API (no IP whitelisting needed, requires API key)
-// Fallback: SMTP relay (requires IP whitelisting OR IP blocking disabled)
-const sendMail = async (mailOptions) => {
-  const apiKey = process.env.BREVO_API_KEY || "";
-  const sender = process.env.BREVO_SMTP_SENDER || "aspiringmind05@gmail.com";
+const getEnv = (key, fallback = "") => (process.env[key] || fallback).trim();
 
-  // Use Brevo HTTP API if BREVO_API_KEY is set
+const sendMail = async (mailOptions) => {
+  const apiKey = getEnv("BREVO_API_KEY");
+  const sender = getEnv("BREVO_SMTP_SENDER", "aspiringmind05@gmail.com");
+
+  // Primary: Brevo HTTP API (no IP whitelisting needed)
   if (apiKey && apiKey.length > 10) {
+    console.log("📧 Sending email via Brevo HTTP API...");
     const payload = {
-      sender: {
-        name: "Secure Exam Pro",
-        email: sender
-      },
+      sender: { name: "Secure Exam Pro", email: sender },
       to: [{ email: typeof mailOptions.to === "string" ? mailOptions.to.trim() : mailOptions.to }],
       subject: mailOptions.subject,
       htmlContent: mailOptions.html
@@ -39,18 +37,29 @@ const sendMail = async (mailOptions) => {
   }
 
   // Fallback: SMTP relay
+  const smtpUser = getEnv("BREVO_SMTP_USER", "a9e7fe001@smtp-brevo.com");
+  const smtpKey = getEnv("BREVO_SMTP_KEY");
+  const smtpHost = getEnv("BREVO_SMTP_HOST", "smtp-relay.brevo.com");
+  const smtpPort = parseInt(getEnv("BREVO_SMTP_PORT", "587"));
+
+  console.log(`📧 Sending email via SMTP... Host: ${smtpHost}, Port: ${smtpPort}, User: ${smtpUser}, Key length: ${smtpKey.length}`);
+
+  if (!smtpKey) {
+    throw new Error("SMTP key is empty. Set BREVO_SMTP_KEY or BREVO_API_KEY in environment variables.");
+  }
+
   const transporter = nodemailer.createTransport({
-    host: process.env.BREVO_SMTP_HOST || "smtp-relay.brevo.com",
-    port: parseInt(process.env.BREVO_SMTP_PORT || "587"),
+    host: smtpHost,
+    port: smtpPort,
     secure: false,
     auth: {
-      user: process.env.BREVO_SMTP_USER || "a9e7fe001@smtp-brevo.com",
-      pass: process.env.BREVO_SMTP_KEY || "",
+      user: smtpUser,
+      pass: smtpKey,
     },
   });
 
   const result = await transporter.sendMail(mailOptions);
-  console.log("✅ Email sent via SMTP relay, messageId:", result.messageId);
+  console.log("✅ Email sent via SMTP, messageId:", result.messageId);
   return result;
 };
 
