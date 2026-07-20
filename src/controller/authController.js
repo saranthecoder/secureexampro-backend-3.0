@@ -1,6 +1,6 @@
 const User = require("../models/User");
 const Otp = require("../models/Otp");
-const transporter = require("../config/mail");
+const { sendMail } = require("../config/mail");
 
 exports.signup = async (req, res) => {
   return res.status(400).json({ message: "Signup is disabled. Please login via OTP." });
@@ -82,7 +82,7 @@ exports.sendOtp = async (req, res) => {
       `
     };
 
-    await transporter.sendMail(mailOptions);
+    await sendMail(mailOptions);
     res.json({ message: "OTP sent successfully." });
 
   } catch (error) {

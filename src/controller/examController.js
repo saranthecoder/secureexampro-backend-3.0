@@ -1073,8 +1073,8 @@ const sendCandidateResultEmail = async (studentEmail, examCode, resultData, exam
     `
   };
 
-  const transporter = require("../config/mail");
-  await transporter.sendMail(mailOptions);
+  const { sendMail } = require("../config/mail");
+  await sendMail(mailOptions);
 };
 
 exports.sendResultEmail = async (req, res) => {
