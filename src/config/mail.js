@@ -1,66 +1,42 @@
-const nodemailer = require("nodemailer");
-
-const getEnv = (key, fallback = "") => (process.env[key] || fallback).trim();
+const SibApiV3Sdk = require("sib-api-v3-sdk");
 
 const sendMail = async (mailOptions) => {
-  const apiKey = getEnv("BREVO_API_KEY");
-  const sender = getEnv("BREVO_SMTP_SENDER", "aspiringmind05@gmail.com");
+  const apiKey = (process.env.BREVO_API_KEY || process.env.BREVO_SMTP_KEY || "").trim();
+  
+  if (!apiKey) {
+    throw new Error("BREVO_API_KEY or BREVO_SMTP_KEY is not configured in environment variables.");
+  }
 
-  // Primary: Brevo HTTP API (no IP whitelisting needed)
-  if (apiKey && apiKey.length > 10) {
-    console.log("📧 Sending email via Brevo HTTP API...");
-    const payload = {
-      sender: { name: "Secure Exam Pro", email: sender },
-      to: [{ email: typeof mailOptions.to === "string" ? mailOptions.to.trim() : mailOptions.to }],
-      subject: mailOptions.subject,
-      htmlContent: mailOptions.html
-    };
+  // Configure API client dynamically per call
+  const client = SibApiV3Sdk.ApiClient.instance;
+  client.authentications["api-key"].apiKey = apiKey;
 
-    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-      method: "POST",
-      headers: {
-        "accept": "application/json",
-        "api-key": apiKey,
-        "content-type": "application/json"
+  const transactionalEmailApi = new SibApiV3Sdk.TransactionalEmailsApi();
+  const senderName = (process.env.MAIL_FROM_NAME || "Secure Exam Pro").trim();
+  const senderEmail = (process.env.MAIL_FROM || process.env.BREVO_SMTP_SENDER || "aspiringmind05@gmail.com").trim();
+  const toEmail = typeof mailOptions.to === "string" ? mailOptions.to.trim() : mailOptions.to;
+
+  try {
+    const response = await transactionalEmailApi.sendTransacEmail({
+      sender: {
+        name: senderName,
+        email: senderEmail
       },
-      body: JSON.stringify(payload)
+      to: [{ email: toEmail }],
+      subject: mailOptions.subject,
+      htmlContent: mailOptions.html || undefined,
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`Brevo API Error ${response.status}: ${JSON.stringify(errorData)}`);
-    }
+    console.log("✅ Mail sent via Brevo SDK, messageId:", response.messageId);
+    return response;
 
-    const data = await response.json();
-    console.log("✅ Email sent via Brevo HTTP API, messageId:", data.messageId);
-    return data;
+  } catch (error) {
+    console.error(
+      "❌ Brevo mail error:",
+      error.response?.body || error.message
+    );
+    throw error;
   }
-
-  // Fallback: SMTP relay
-  const smtpUser = getEnv("BREVO_SMTP_USER", "a9e7fe001@smtp-brevo.com");
-  const smtpKey = getEnv("BREVO_SMTP_KEY");
-  const smtpHost = getEnv("BREVO_SMTP_HOST", "smtp-relay.brevo.com");
-  const smtpPort = parseInt(getEnv("BREVO_SMTP_PORT", "587"));
-
-  console.log(`📧 Sending email via SMTP... Host: ${smtpHost}, Port: ${smtpPort}, User: ${smtpUser}, Key length: ${smtpKey.length}`);
-
-  if (!smtpKey) {
-    throw new Error("SMTP key is empty. Set BREVO_SMTP_KEY or BREVO_API_KEY in environment variables.");
-  }
-
-  const transporter = nodemailer.createTransport({
-    host: smtpHost,
-    port: smtpPort,
-    secure: false,
-    auth: {
-      user: smtpUser,
-      pass: smtpKey,
-    },
-  });
-
-  const result = await transporter.sendMail(mailOptions);
-  console.log("✅ Email sent via SMTP, messageId:", result.messageId);
-  return result;
 };
 
 module.exports = { sendMail };
