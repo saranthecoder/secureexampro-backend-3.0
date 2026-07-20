@@ -82,23 +82,24 @@ exports.sendOtp = async (req, res) => {
       `
     };
 
-    await transporter.sendMail(mailOptions);
+    // Return response immediately so frontend transition is instant (sub-100ms)
     res.json({ message: "OTP sent successfully." });
 
-  } catch (error) {
-    console.error("Error sending OTP:", error);
-    console.log("\n========================================================");
-    console.log(`🔑 EMERGENCY OTP BYPASS (SMTP AUTHENTICATION FAILED)`);
-    console.log(`Candidate Name: ${name}`);
-    console.log(`Candidate Email: ${cleanEmail}`);
-    console.log(`Candidate Roll Number: ${rollNumber}`);
-    console.log(`Generated OTP: ${otpCode}`);
-    console.log("========================================================\n");
-    
-    res.status(500).json({ 
-      message: "Mail service authentication failed. The OTP has been logged to the server console for local testing.",
-      error: error.message 
+    // Send email in background using pooled SMTP connection
+    transporter.sendMail(mailOptions).catch((mailErr) => {
+      console.error("Error sending OTP email in background:", mailErr.message);
+      console.log("\n========================================================");
+      console.log(`🔑 EMERGENCY OTP LOG (BACKGROUND MAIL ERROR)`);
+      console.log(`Candidate Name: ${name}`);
+      console.log(`Candidate Email: ${cleanEmail}`);
+      console.log(`Candidate Roll Number: ${rollNumber}`);
+      console.log(`Generated OTP: ${otpCode}`);
+      console.log("========================================================\n");
     });
+
+  } catch (error) {
+    console.error("Error generating OTP:", error);
+    res.status(500).json({ error: error.message });
   }
 };
 
