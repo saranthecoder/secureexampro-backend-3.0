@@ -16,7 +16,6 @@ app.use(cors({
   credentials: true,
   allowedHeaders: "Origin,X-Requested-With,Content-Type,Accept,Authorization"
 }));
-app.options("*", cors());
 app.use(express.json({ limit: "10mb" }));
 
 app.use("/api/auth", authRoutes);
