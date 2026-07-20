@@ -935,6 +935,8 @@ exports.updateProctorConfig = async (req, res) => {
       trackTabSwitches,
       trackFullScreenExit,
       trackInternetIssues,
+      maxTabSwitches,
+      maxFullScreenExits,
       dispatchPolicy
     } = req.body;
 
@@ -945,7 +947,9 @@ exports.updateProctorConfig = async (req, res) => {
       screenShareMonitor: !!screenShareMonitor,
       trackTabSwitches: !!trackTabSwitches,
       trackFullScreenExit: !!trackFullScreenExit,
-      trackInternetIssues: !!trackInternetIssues
+      trackInternetIssues: !!trackInternetIssues,
+      maxTabSwitches: Number(maxTabSwitches) > 0 ? Number(maxTabSwitches) : 3,
+      maxFullScreenExits: Number(maxFullScreenExits) > 0 ? Number(maxFullScreenExits) : 3
     };
 
     if (dispatchPolicy !== undefined) {

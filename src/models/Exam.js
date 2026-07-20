@@ -34,6 +34,8 @@ const examSchema = new mongoose.Schema({
   trackTabSwitches: { type: Boolean, default: true },
   trackFullScreenExit: { type: Boolean, default: true },
   trackInternetIssues: { type: Boolean, default: true },
+  maxTabSwitches: { type: Number, default: 3 },
+  maxFullScreenExits: { type: Number, default: 3 },
   dispatchPolicy: { type: String, enum: ["automatic", "manual", "none"], default: "none" }
 }, { timestamps: true });
 
