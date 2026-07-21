@@ -36,7 +36,23 @@ const examSchema = new mongoose.Schema({
   trackInternetIssues: { type: Boolean, default: true },
   maxTabSwitches: { type: Number, default: 3 },
   maxFullScreenExits: { type: Number, default: 3 },
-  dispatchPolicy: { type: String, enum: ["automatic", "manual", "none"], default: "none" }
+  dispatchPolicy: { type: String, enum: ["automatic", "manual", "none"], default: "none" },
+  assessmentType: { type: String, enum: ["standard", "coding_hybrid"], default: "standard" },
+  questionSets: [{
+    setName: { type: String, required: true },
+    instructions: { type: String, default: "" },
+    paperMaxMarks: { type: Number, default: 50 },
+    executionMaxMarks: { type: Number, default: 50 },
+    problemStatement: { type: String, default: "" },
+    sampleInputOutput: { type: String, default: "" },
+    codeTemplate: { type: String, default: "" },
+    problems: [{
+      title: { type: String, default: "Problem 1" },
+      problemStatement: { type: String, default: "" },
+      sampleInputOutput: { type: String, default: "" },
+      instructions: { type: String, default: "" }
+    }]
+  }]
 }, { timestamps: true });
 
 module.exports = mongoose.model("Exam", examSchema);

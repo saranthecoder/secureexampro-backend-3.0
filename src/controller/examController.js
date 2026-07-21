@@ -194,10 +194,15 @@ exports.createExam = async (req, res) => {
           imageUrl: q.imageUrl ? q.imageUrl.toString().trim() : ""
         };
       });
-    } else {
-      return res.status(400).json({
-        message: "Excel file or questions payload is required"
-      });
+    }
+
+    let parsedSets = [];
+    if (req.body.questionSets) {
+      try {
+        parsedSets = typeof req.body.questionSets === "string" ? JSON.parse(req.body.questionSets) : req.body.questionSets;
+      } catch (e) {
+        parsedSets = [];
+      }
     }
 
     const exam = await Exam.create({
@@ -209,7 +214,9 @@ exports.createExam = async (req, res) => {
       questions: parsedQuestions,
       createdBy: adminEmail,
       cameraMonitor: cameraMonitor === "true" || cameraMonitor === true,
-      dispatchPolicy: req.body.dispatchPolicy || "none"
+      dispatchPolicy: req.body.dispatchPolicy || "none",
+      assessmentType: req.body.assessmentType || "standard",
+      questionSets: parsedSets
     });
 
     res.status(201).json({ message: "Exam created", exam });
@@ -273,6 +280,16 @@ exports.getExamByCode = async (req, res) => {
         questions: [],
         notStartedYet: true,
         cameraMonitor: exam.cameraMonitor || false,
+        aiProctorActive: exam.aiProctorActive || false,
+        micMonitor: exam.micMonitor || false,
+        screenShareMonitor: exam.screenShareMonitor || false,
+        trackTabSwitches: exam.trackTabSwitches !== false,
+        trackFullScreenExit: exam.trackFullScreenExit !== false,
+        trackInternetIssues: exam.trackInternetIssues !== false,
+        maxTabSwitches: exam.maxTabSwitches || 3,
+        maxFullScreenExits: exam.maxFullScreenExits || 3,
+        assessmentType: exam.assessmentType || "standard",
+        questionSets: exam.questionSets || [],
         hasNegativeMarking,
         maxNegativeMark,
         serverTime: now
@@ -321,8 +338,20 @@ exports.getExamByCode = async (req, res) => {
       title: exam.title,
       duration: exam.duration,
       examCode: exam.examCode,
+      startTime: exam.startTime,
+      endTime: exam.endTime,
       questions: questionsForStudent,
       cameraMonitor: exam.cameraMonitor || false,
+      aiProctorActive: exam.aiProctorActive || false,
+      micMonitor: exam.micMonitor || false,
+      screenShareMonitor: exam.screenShareMonitor || false,
+      trackTabSwitches: exam.trackTabSwitches !== false,
+      trackFullScreenExit: exam.trackFullScreenExit !== false,
+      trackInternetIssues: exam.trackInternetIssues !== false,
+      maxTabSwitches: exam.maxTabSwitches || 3,
+      maxFullScreenExits: exam.maxFullScreenExits || 3,
+      assessmentType: exam.assessmentType || "standard",
+      questionSets: exam.questionSets || [],
       hasNegativeMarking,
       maxNegativeMark,
       serverTime: now
@@ -790,19 +819,33 @@ exports.heartbeat = async (req, res) => {
     const { name } = req.body;
 
     const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
+    const existing = activeCandidates[key] || {};
+
     activeCandidates[key] = {
-      name: name || (activeCandidates[key] ? activeCandidates[key].name : "Candidate"),
+      name: name || existing.name || "Candidate",
       timestamp: Date.now(),
       faceWarningCount: req.body.faceWarningCount || 0,
       noiseWarningCount: req.body.noiseWarningCount || 0,
       tabSwitchCount: req.body.tabSwitchCount || 0,
       fullScreenExitCount: req.body.fullScreenExitCount || 0,
       internetIssueCount: req.body.internetIssueCount || 0,
-      screenShareViolationCount: req.body.screenShareViolationCount || 0
+      screenShareViolationCount: req.body.screenShareViolationCount || 0,
+      assignedSet: existing.assignedSet || "",
+      codingPhase: existing.codingPhase || "lobby",
+      allowLocalIdeSwitch: existing.allowLocalIdeSwitch || false,
+      paperLogicMarks: existing.paperLogicMarks || 0,
+      executionOutputMarks: existing.executionOutputMarks || 0,
+      totalCodingScore: existing.totalCodingScore || 0
     };
 
     const isTerminated = !!terminatedStudents[key];
-    res.json({ success: true, terminated: isTerminated });
+    res.json({
+      success: true,
+      terminated: isTerminated,
+      assignedSet: activeCandidates[key].assignedSet,
+      codingPhase: activeCandidates[key].codingPhase,
+      allowLocalIdeSwitch: activeCandidates[key].allowLocalIdeSwitch
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -818,7 +861,6 @@ exports.getActiveCandidates = async (req, res) => {
       if (key.startsWith(prefix)) {
         const email = key.substring(prefix.length).toLowerCase();
         const data = activeCandidates[key];
-        // Mark candidate as offline if no heartbeat was received in the last 15 seconds
         const isOffline = Date.now() - data.timestamp > 15000;
         results[email] = {
           name: data.name || "Candidate",
@@ -829,7 +871,13 @@ exports.getActiveCandidates = async (req, res) => {
           tabSwitchCount: data.tabSwitchCount || 0,
           fullScreenExitCount: data.fullScreenExitCount || 0,
           internetIssueCount: data.internetIssueCount || 0,
-          screenShareViolationCount: data.screenShareViolationCount || 0
+          screenShareViolationCount: data.screenShareViolationCount || 0,
+          assignedSet: data.assignedSet || "",
+          codingPhase: data.codingPhase || "lobby",
+          allowLocalIdeSwitch: data.allowLocalIdeSwitch || false,
+          paperLogicMarks: data.paperLogicMarks || 0,
+          executionOutputMarks: data.executionOutputMarks || 0,
+          totalCodingScore: data.totalCodingScore || 0
         };
       }
     }
@@ -846,40 +894,15 @@ exports.terminateStudent = async (req, res) => {
     const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
     terminatedStudents[key] = true;
 
-    // Persist a database record in ${examCode}_results to ensure persistence
     const exam = await Exam.findOne({ examCode: examCode.toUpperCase() });
     if (exam) {
       const candName = activeCandidates[key]?.name || "Candidate";
-      const totalMarks = exam.questions.reduce((sum, q) => sum + (q.marks || 0), 0);
-
-      const resultSchema = new mongoose.Schema({
-        studentName: { type: String, required: true },
-        studentEmail: String,
-        answers: [{
-          questionId: mongoose.Schema.Types.ObjectId,
-          selectedOption: String
-        }],
-        score: Number,
-        positiveMarks: Number,
-        negativeMarks: Number,
-        totalMarks: Number,
-        terminated: { type: Boolean, default: false },
-        tabSwitched: { type: Boolean, default: false },
-        tabSwitchCount: { type: Number, default: 0 },
-        faceWarningCount: { type: Number, default: 0 },
-        noiseWarningCount: { type: Number, default: 0 },
-        internetIssueCount: { type: Number, default: 0 },
-        fullScreenExitCount: { type: Number, default: 0 },
-        screenShareViolationCount: { type: Number, default: 0 },
-        faceTurnTerminated: { type: Boolean, default: false },
-        terminatedByAdmin: { type: Boolean, default: false },
-        submittedAt: Date
-      }, { timestamps: true });
+      const totalMarks = exam.questions ? exam.questions.reduce((sum, q) => sum + (q.marks || 0), 0) : 100;
 
       const collectionName = `${examCode.toUpperCase()}_results`;
       const DynamicResult =
         mongoose.models[collectionName] ||
-        mongoose.model(collectionName, resultSchema, collectionName);
+        mongoose.model(collectionName, Result.schema, collectionName);
 
       const alreadySubmitted = await DynamicResult.findOne({ studentEmail: email.toLowerCase() });
       if (!alreadySubmitted) {
@@ -917,8 +940,152 @@ exports.checkStudentStatus = async (req, res) => {
   try {
     const { examCode, email } = req.params;
     const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
+    const cand = activeCandidates[key] || {};
     const isTerminated = !!terminatedStudents[key];
-    res.json({ terminated: isTerminated });
+    res.json({
+      terminated: isTerminated,
+      assignedSet: cand.assignedSet || "",
+      codingPhase: cand.codingPhase || "lobby",
+      allowLocalIdeSwitch: cand.allowLocalIdeSwitch || false
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// 📌 CODING HYBRID EVALUATION CONTROLLERS
+
+exports.assignCodingSet = async (req, res) => {
+  try {
+    const { examCode, email } = req.params;
+    const { assignedSet } = req.body;
+    const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
+
+    if (!activeCandidates[key]) {
+      activeCandidates[key] = { name: "Candidate", timestamp: Date.now() };
+    }
+    activeCandidates[key].assignedSet = assignedSet;
+    if (activeCandidates[key].codingPhase === "lobby" || !activeCandidates[key].codingPhase) {
+      activeCandidates[key].codingPhase = "paper_writing";
+    }
+
+    res.json({ success: true, message: `Question ${assignedSet} assigned to ${email}`, assignedSet });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.updateCodingMarks = async (req, res) => {
+  try {
+    const { examCode, email } = req.params;
+    const { paperLogicMarks, executionOutputMarks } = req.body;
+    const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
+
+    if (!activeCandidates[key]) {
+      activeCandidates[key] = { name: "Candidate", timestamp: Date.now() };
+    }
+
+    const paperScore = Number(paperLogicMarks !== undefined ? paperLogicMarks : activeCandidates[key].paperLogicMarks || 0);
+    const execScore = Number(executionOutputMarks !== undefined ? executionOutputMarks : activeCandidates[key].executionOutputMarks || 0);
+
+    activeCandidates[key].paperLogicMarks = paperScore;
+    activeCandidates[key].executionOutputMarks = execScore;
+    activeCandidates[key].totalCodingScore = paperScore + execScore;
+
+    res.json({
+      success: true,
+      paperLogicMarks: paperScore,
+      executionOutputMarks: execScore,
+      totalCodingScore: paperScore + execScore
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.toggleLocalIdeAccess = async (req, res) => {
+  try {
+    const { examCode, email } = req.params;
+    const { allowLocalIdeSwitch } = req.body;
+    const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
+
+    if (!activeCandidates[key]) {
+      activeCandidates[key] = { name: "Candidate", timestamp: Date.now() };
+    }
+
+    activeCandidates[key].allowLocalIdeSwitch = !!allowLocalIdeSwitch;
+    activeCandidates[key].codingPhase = allowLocalIdeSwitch ? "ide_unlocked" : "paper_writing";
+
+    res.json({
+      success: true,
+      allowLocalIdeSwitch: activeCandidates[key].allowLocalIdeSwitch,
+      codingPhase: activeCandidates[key].codingPhase
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.completeCodingExam = async (req, res) => {
+  try {
+    const { examCode, email } = req.params;
+    const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
+    const candData = activeCandidates[key] || {};
+
+    const exam = await Exam.findOne({ examCode: examCode.toUpperCase() });
+    if (!exam) return res.status(404).json({ message: "Exam not found" });
+
+    const totalPaperMarks = exam.questionSets?.[0]?.paperMaxMarks || 50;
+    const totalExecMarks = exam.questionSets?.[0]?.executionMaxMarks || 50;
+    const maxMarks = totalPaperMarks + totalExecMarks;
+
+    const paperScore = candData.paperLogicMarks || 0;
+    const execScore = candData.executionOutputMarks || 0;
+    const finalScore = paperScore + execScore;
+
+    const collectionName = `${examCode.toUpperCase()}_results`;
+    const DynamicResult =
+      mongoose.models[collectionName] ||
+      mongoose.model(collectionName, Result.schema, collectionName);
+
+    const filter = { studentEmail: email.toLowerCase() };
+    const resultData = {
+      examCode: examCode.toUpperCase(),
+      studentName: candData.name || "Candidate",
+      studentEmail: email.toLowerCase(),
+      assessmentType: "coding_hybrid",
+      assignedSet: candData.assignedSet || "Set A",
+      paperLogicMarks: paperScore,
+      executionOutputMarks: execScore,
+      totalCodingScore: finalScore,
+      score: finalScore,
+      positiveMarks: finalScore,
+      negativeMarks: 0,
+      totalMarks: maxMarks,
+      codingPhase: "completed",
+      allowLocalIdeSwitch: false,
+      tabSwitchCount: candData.tabSwitchCount || 0,
+      fullScreenExitCount: candData.fullScreenExitCount || 0,
+      faceWarningCount: candData.faceWarningCount || 0,
+      noiseWarningCount: candData.noiseWarningCount || 0,
+      internetIssueCount: candData.internetIssueCount || 0,
+      screenShareViolationCount: candData.screenShareViolationCount || 0,
+      submittedAt: new Date()
+    };
+
+    await DynamicResult.findOneAndUpdate(filter, resultData, { upsert: true, new: true });
+
+    candData.codingPhase = "completed";
+    candData.allowLocalIdeSwitch = false;
+
+    // Trigger automated email scorecard report
+    try {
+      await exports.sendResultEmail({ params: { examCode }, body: { studentEmail: email.toLowerCase() } }, { json: () => {}, status: () => ({ json: () => {} }) });
+    } catch (mailErr) {
+      console.warn("Coding result email dispatch warning:", mailErr.message);
+    }
+
+    res.json({ success: true, message: "Coding Assessment completed and scorecard emailed.", score: finalScore });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1175,6 +1342,185 @@ exports.sendAllResultsEmail = async (req, res) => {
     });
   } catch (error) {
     console.error("Failed to execute batch email dispatch:", error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ==========================================
+// 🎓 GET STUDENT COMPREHENSIVE REPORTS
+// ==========================================
+exports.getStudentReports = async (req, res) => {
+  try {
+    const { email } = req.params;
+    if (!email) {
+      return res.status(400).json({ message: "Student email is required" });
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+    const exams = await Exam.find({});
+    const studentReports = [];
+
+    for (const exam of exams) {
+      const collectionName = `${exam.examCode}_results`;
+      const resultCollection = mongoose.connection.collection(collectionName);
+      
+      const resultDoc = await resultCollection.findOne({
+        studentEmail: { $regex: new RegExp(`^${cleanEmail.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}$`, "i") }
+      });
+
+      if (resultDoc) {
+        // Build detailed question analysis
+        const questionAnalysis = [];
+
+        // 1. Standard / Paper questions
+        (exam.questions || []).forEach((q) => {
+          const ansObj = (resultDoc.answers || []).find(
+            (a) => a.questionId && a.questionId.toString() === q._id.toString()
+          );
+
+          const studentSelected = ansObj ? (ansObj.selectedOption || "") : "";
+          const timeSpent = ansObj ? (ansObj.timeSpent || 0) : 0;
+          const qType = q.questionType || (q.isMultipleCorrect ? "MSQ" : "MCQ");
+          const correctVal = q.correctAnswer || "";
+          const questionMarks = q.marks || 1;
+
+          let isCorrect = false;
+          let isPartial = false;
+
+          if (studentSelected) {
+            if (qType === "MCQ") {
+              const selected = studentSelected.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+              const correct = correctVal.split(",").map(c => c.trim().toUpperCase()).filter(Boolean);
+              isCorrect = selected.length === 1 && selected[0] === correct[0];
+            } else if (qType === "MSQ") {
+              const selected = studentSelected.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+              const correct = correctVal.split(",").map(c => c.trim().toUpperCase()).filter(Boolean);
+              const hasIncorrect = selected.some(opt => !correct.includes(opt));
+              if (!hasIncorrect) {
+                if (selected.length === correct.length) isCorrect = true;
+                else if (selected.length > 0) isPartial = true;
+              }
+            } else if (qType === "FIB" || qType === "NUM" || qType === "DES" || qType === "CODING") {
+              isCorrect = studentSelected.trim().toLowerCase() === correctVal.trim().toLowerCase();
+            }
+          }
+
+          questionAnalysis.push({
+            questionId: q._id,
+            section: q.section || "General",
+            questionText: q.question,
+            options: q.options || {},
+            codeSnippet: q.codeSnippet || "",
+            imageUrl: q.imageUrl || "",
+            explanation: q.explanation || "",
+            questionType: qType,
+            correctAnswer: correctVal,
+            studentAnswer: studentSelected,
+            marks: questionMarks,
+            negativeMarks: q.negativeMarks || 0,
+            isCorrect,
+            isPartial,
+            timeSpent
+          });
+        });
+
+        // 2. Question Sets (Coding Assessment & Coding Hybrid)
+        if (exam.questionSets && Array.isArray(exam.questionSets) && exam.questionSets.length > 0) {
+          exam.questionSets.forEach((set, sIdx) => {
+            const setName = set.setName || `Set ${String.fromCharCode(65 + sIdx)}`;
+            
+            // If candidate has an assigned set, prioritize assigned set or show all sets
+            const matchesAssigned = !resultDoc.assignedSet || resultDoc.assignedSet === setName;
+            
+            if (matchesAssigned) {
+              if (set.problems && Array.isArray(set.problems) && set.problems.length > 0) {
+                set.problems.forEach((prob, pIdx) => {
+                  const isCorrect = (resultDoc.paperLogicMarks || 0) + (resultDoc.executionOutputMarks || 0) > 0;
+                  questionAnalysis.push({
+                    questionId: `${set._id || sIdx}_prob_${pIdx}`,
+                    section: `${setName} - Coding`,
+                    questionText: `${prob.title || 'Problem ' + (pIdx + 1)}: ${prob.problemStatement || set.problemStatement || set.instructions || 'Hands-on Coding Assessment'}`,
+                    options: {},
+                    codeSnippet: set.codeTemplate || "",
+                    imageUrl: "",
+                    explanation: `Sample Input/Output:\n${prob.sampleInputOutput || set.sampleInputOutput || 'N/A'}\n\nInstructions:\n${prob.instructions || set.instructions || 'N/A'}`,
+                    questionType: "CODING",
+                    correctAnswer: prob.sampleInputOutput || set.sampleInputOutput || "Sample Test Cases & Program Execution Expected",
+                    studentAnswer: `Paper Logic Marks: ${resultDoc.paperLogicMarks || 0} | Execution Output Marks: ${resultDoc.executionOutputMarks || 0}`,
+                    marks: (set.paperMaxMarks || 50) + (set.executionMaxMarks || 50),
+                    negativeMarks: 0,
+                    isCorrect,
+                    isPartial: false,
+                    timeSpent: 0
+                  });
+                });
+              } else {
+                const isCorrect = (resultDoc.paperLogicMarks || 0) + (resultDoc.executionOutputMarks || 0) > 0;
+                questionAnalysis.push({
+                  questionId: set._id || `set_${sIdx}`,
+                  section: `${setName} - Coding`,
+                  questionText: set.problemStatement || set.instructions || `Hands-on Coding Assessment (${setName})`,
+                  options: {},
+                  codeSnippet: set.codeTemplate || "",
+                  imageUrl: "",
+                  explanation: `Sample Input/Output:\n${set.sampleInputOutput || 'N/A'}\n\nInstructions:\n${set.instructions || 'N/A'}`,
+                  questionType: "CODING",
+                  correctAnswer: set.sampleInputOutput || "Sample Test Cases & Program Execution Expected",
+                  studentAnswer: `Paper Logic Marks: ${resultDoc.paperLogicMarks || 0} | Execution Output Marks: ${resultDoc.executionOutputMarks || 0}`,
+                  marks: (set.paperMaxMarks || 50) + (set.executionMaxMarks || 50),
+                  negativeMarks: 0,
+                  isCorrect,
+                  isPartial: false,
+                  timeSpent: 0
+                });
+              }
+            }
+          });
+        }
+
+        studentReports.push({
+          examId: exam._id,
+          examCode: exam.examCode,
+          examTitle: exam.title,
+          assessmentType: exam.assessmentType || "standard",
+          duration: exam.duration,
+          startTime: exam.startTime,
+          endTime: exam.endTime,
+          questionSets: exam.questionSets || [],
+          
+          // Result metrics
+          score: resultDoc.score || 0,
+          positiveMarks: resultDoc.positiveMarks || 0,
+          negativeMarks: resultDoc.negativeMarks || 0,
+          totalMarks: resultDoc.totalMarks || 100,
+          paperLogicMarks: resultDoc.paperLogicMarks || 0,
+          executionOutputMarks: resultDoc.executionOutputMarks || 0,
+          assignedSet: resultDoc.assignedSet || "",
+          allowLocalIdeSwitch: resultDoc.allowLocalIdeSwitch || false,
+          codingPhase: resultDoc.codingPhase || "not_started",
+          terminated: resultDoc.terminated || false,
+          submittedAt: resultDoc.submittedAt,
+
+          // Anti-cheating Telemetry
+          tabSwitchCount: resultDoc.tabSwitchCount || 0,
+          faceWarningCount: resultDoc.faceWarningCount || 0,
+          noiseWarningCount: resultDoc.noiseWarningCount || 0,
+          fullScreenExitCount: resultDoc.fullScreenExitCount || 0,
+          internetIssueCount: resultDoc.internetIssueCount || 0,
+
+          // Detailed questions analysis
+          questionAnalysis
+        });
+      }
+    }
+
+    res.json({
+      studentEmail: cleanEmail,
+      totalExamsAttempted: studentReports.length,
+      reports: studentReports
+    });
+  } catch (error) {
+    console.error("Error fetching student reports:", error);
     res.status(500).json({ error: error.message });
   }
 };

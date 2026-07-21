@@ -88,6 +88,35 @@ const resultSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  assessmentType: {
+    type: String,
+    default: "standard"
+  },
+  assignedSet: {
+    type: String,
+    default: ""
+  },
+  paperLogicMarks: {
+    type: Number,
+    default: 0
+  },
+  executionOutputMarks: {
+    type: Number,
+    default: 0
+  },
+  totalCodingScore: {
+    type: Number,
+    default: 0
+  },
+  codingPhase: {
+    type: String,
+    enum: ["lobby", "paper_writing", "ide_unlocked", "evaluated", "completed"],
+    default: "lobby"
+  },
+  allowLocalIdeSwitch: {
+    type: Boolean,
+    default: false
+  },
   submittedAt: Date
 
 }, { timestamps: true });
