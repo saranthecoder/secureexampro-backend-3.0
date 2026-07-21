@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 const Exam = require("../models/Exam");
-// const resultSchema = require("../models/Result");
+const Result = require("../models/Result");
 const XLSX = require("xlsx");
 const fs = require("fs");
 
