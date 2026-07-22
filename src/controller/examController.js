@@ -1003,6 +1003,7 @@ exports.terminateStudent = async (req, res) => {
           faceTurnTerminated: false,
           terminatedByAdmin: true,
           submittedAt: new Date()
+        });
       }
       delete activeCandidates[key];
       delete activeCandidates[email.toLowerCase()];
