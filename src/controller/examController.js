@@ -269,8 +269,21 @@ exports.getExamByCode = async (req, res) => {
     const hasNegativeMarking = exam.questions.some((q) => (q.negativeMarks || 0) > 0);
     const maxNegativeMark = hasNegativeMarking ? Math.max(...exam.questions.map(q => q.negativeMarks || 0)) : 0;
 
+    const getStaggeredDelay = (emailStr) => {
+      if (!emailStr) return 0;
+      let hash = 0;
+      for (let i = 0; i < emailStr.length; i++) {
+        hash = emailStr.charCodeAt(i) + ((hash << 5) - hash);
+      }
+      // Stagger entry over 60 seconds (500-student free tier adaptive mode)
+      return Math.abs(hash) % 60;
+    };
+
+    const startTimeMs = new Date(exam.startTime).getTime();
+    const nowMs = now.getTime();
+
     // If not started yet, return metadata only (empty questions array)
-    if (now < exam.startTime) {
+    if (nowMs < startTimeMs) {
       return res.json({
         title: exam.title,
         duration: exam.duration,
@@ -294,6 +307,38 @@ exports.getExamByCode = async (req, res) => {
         maxNegativeMark,
         serverTime: now
       });
+    }
+
+    // Lobby waiting room staggered check (only if student email is provided)
+    if (email) {
+      const delaySeconds = getStaggeredDelay(email.toLowerCase().trim());
+      const allowedTimeMs = startTimeMs + (delaySeconds * 1000);
+      if (nowMs < allowedTimeMs) {
+        return res.json({
+          title: exam.title,
+          duration: exam.duration,
+          examCode: exam.examCode,
+          startTime: exam.startTime,
+          endTime: exam.endTime,
+          questions: [],
+          inWaitingLobby: true,
+          waitTimeRemaining: Math.ceil((allowedTimeMs - nowMs) / 1000),
+          cameraMonitor: exam.cameraMonitor || false,
+          aiProctorActive: exam.aiProctorActive || false,
+          micMonitor: exam.micMonitor || false,
+          screenShareMonitor: exam.screenShareMonitor || false,
+          trackTabSwitches: exam.trackTabSwitches !== false,
+          trackFullScreenExit: exam.trackFullScreenExit !== false,
+          trackInternetIssues: exam.trackInternetIssues !== false,
+          maxTabSwitches: exam.maxTabSwitches || 3,
+          maxFullScreenExits: exam.maxFullScreenExits || 3,
+          assessmentType: exam.assessmentType || "standard",
+          questionSets: exam.questionSets || [],
+          hasNegativeMarking,
+          maxNegativeMark,
+          serverTime: now
+        });
+      }
     }
 
     // ===============================
@@ -558,6 +603,7 @@ exports.submitExam = async (req, res) => {
     }
 
     await DynamicResult.create({
+      examCode: examCode.toUpperCase(),
       studentName,
       studentEmail,
       studentRollNumber,
@@ -816,13 +862,14 @@ const terminatedStudents = {};
 exports.heartbeat = async (req, res) => {
   try {
     const { examCode, email } = req.params;
-    const { name } = req.body;
+    const { name, rollNumber } = req.body;
 
     const key = `${examCode.toUpperCase()}-${email.toLowerCase()}`;
     const existing = activeCandidates[key] || {};
 
     activeCandidates[key] = {
       name: name || existing.name || "Candidate",
+      rollNumber: rollNumber || existing.rollNumber || "",
       timestamp: Date.now(),
       faceWarningCount: req.body.faceWarningCount || 0,
       noiseWarningCount: req.body.noiseWarningCount || 0,
@@ -861,9 +908,10 @@ exports.getActiveCandidates = async (req, res) => {
       if (key.startsWith(prefix)) {
         const email = key.substring(prefix.length).toLowerCase();
         const data = activeCandidates[key];
-        const isOffline = Date.now() - data.timestamp > 15000;
+        const isOffline = Date.now() - data.timestamp > 30000;
         results[email] = {
           name: data.name || "Candidate",
+          rollNumber: data.rollNumber || "",
           isOffline,
           timestamp: data.timestamp,
           faceWarningCount: data.faceWarningCount || 0,
@@ -908,8 +956,10 @@ exports.terminateStudent = async (req, res) => {
       if (!alreadySubmitted) {
         const candData = activeCandidates[key] || {};
         await DynamicResult.create({
+          examCode: examCode.toUpperCase(),
           studentName: candName,
           studentEmail: email.toLowerCase(),
+          studentRollNumber: candData.rollNumber || "",
           answers: [],
           score: 0,
           positiveMarks: 0,
