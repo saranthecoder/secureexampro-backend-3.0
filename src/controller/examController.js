@@ -626,7 +626,12 @@ exports.submitExam = async (req, res) => {
       submittedAt: new Date()
     });
 
-    if (studentEmail) activeSubmissions.delete(lockKey);
+    if (studentEmail) {
+      activeSubmissions.delete(lockKey);
+      const candKey = `${examCode.toUpperCase()}-${studentEmail.toLowerCase().trim()}`;
+      delete activeCandidates[candKey];
+      delete activeCandidates[studentEmail.toLowerCase().trim()];
+    }
 
     if (exam.dispatchPolicy === "automatic") {
       try {
@@ -904,9 +909,31 @@ exports.getActiveCandidates = async (req, res) => {
     const prefix = `${examCode.toUpperCase()}-`;
     const results = {};
 
+    const collectionName = `${examCode.toUpperCase()}_results`;
+    const DynamicResult =
+      mongoose.models[collectionName] ||
+      mongoose.model(collectionName, Result.schema, collectionName);
+
+    let submittedEmailSet = new Set();
+    try {
+      const submittedDocs = await DynamicResult.find({}, "studentEmail submittedAt terminated codingPhase").lean();
+      submittedEmailSet = new Set(
+        submittedDocs
+          .filter(d => d.submittedAt || d.terminated || d.codingPhase === "completed")
+          .map(d => (d.studentEmail || "").toLowerCase().trim())
+      );
+    } catch (dbErr) {
+      // If collection doesn't exist yet, proceed with activeCandidates map
+    }
+
     for (const key in activeCandidates) {
       if (key.startsWith(prefix)) {
-        const email = key.substring(prefix.length).toLowerCase();
+        const email = key.substring(prefix.length).toLowerCase().trim();
+        if (submittedEmailSet.has(email)) {
+          delete activeCandidates[key];
+          continue;
+        }
+
         const data = activeCandidates[key];
         const isOffline = Date.now() - data.timestamp > 30000;
         results[email] = {
@@ -976,10 +1003,12 @@ exports.terminateStudent = async (req, res) => {
           faceTurnTerminated: false,
           terminatedByAdmin: true,
           submittedAt: new Date()
-        });
       }
+      delete activeCandidates[key];
+      delete activeCandidates[email.toLowerCase()];
     }
 
+    delete activeCandidates[key];
     res.json({ success: true, message: "Student marked as terminated successfully" });
   } catch (error) {
     res.status(500).json({ error: error.message });
