@@ -5,12 +5,54 @@ const { sendMail } = require("../config/mail");
 const OTP_LIMIT = 5;
 
 exports.signup = async (req, res) => {
-  return res.status(400).json({ message: "Signup is disabled. Please use OTP-based signup." });
+  return exports.studentLogin(req, res);
+};
+
+// ======================== DIRECT STUDENT LOGIN VIA EMAIL & ROLL NUMBER ========================
+exports.studentLogin = async (req, res) => {
+  try {
+    const { email, rollNumber, name } = req.body;
+
+    if (!email || !rollNumber) {
+      return res.status(400).json({ message: "Candidate Email and Roll Number are required." });
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+    const cleanRoll = rollNumber.trim().toUpperCase();
+    const cleanName = name && name.trim() ? name.trim() : cleanEmail.split("@")[0];
+
+    let user = await User.findOne({ email: cleanEmail });
+
+    if (!user) {
+      user = await User.create({
+        name: cleanName,
+        email: cleanEmail,
+        rollNumber: cleanRoll,
+        role: "student"
+      });
+    } else {
+      user.rollNumber = cleanRoll;
+      if (name && name.trim()) user.name = name.trim();
+      await user.save();
+    }
+
+    return res.json({
+      message: "Login successful",
+      user
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 };
 
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, rollNumber } = req.body;
+
+    // If rollNumber is passed, handle as direct student login
+    if (rollNumber) {
+      return exports.studentLogin(req, res);
+    }
 
     if (email === "coreadmin@secureexam.com") {
       const user = await User.findOne({ email });
@@ -34,7 +76,11 @@ exports.login = async (req, res) => {
       });
     }
 
-    return res.status(400).json({ message: "Students must log in via OTP." });
+    if (user && user.role === "student") {
+      return exports.studentLogin(req, res);
+    }
+
+    return res.status(400).json({ message: "Invalid credentials." });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -242,22 +288,13 @@ exports.verifyOtp = async (req, res) => {
 // ======================== UPDATE PROFILE ========================
 exports.updateProfile = async (req, res) => {
   try {
-    const { email, otp, name, rollNumber } = req.body;
+    const { email, name, rollNumber } = req.body;
 
-    if (!email || !otp) {
-      return res.status(400).json({ message: "Email and OTP are required." });
+    if (!email) {
+      return res.status(400).json({ message: "Candidate email is required." });
     }
 
     const cleanEmail = email.toLowerCase().trim();
-    const cleanOtp = otp.trim();
-
-    // Verify OTP
-    const record = await Otp.findOne({ email: cleanEmail });
-    if (!record || record.otp !== cleanOtp) {
-      return res.status(400).json({ message: "Invalid or expired OTP." });
-    }
-
-    await Otp.deleteOne({ _id: record._id });
 
     // Update user profile
     const user = await User.findOne({ email: cleanEmail });
@@ -265,8 +302,8 @@ exports.updateProfile = async (req, res) => {
       return res.status(404).json({ message: "Student not found." });
     }
 
-    if (name) user.name = name;
-    if (rollNumber) user.rollNumber = rollNumber;
+    if (name && name.trim()) user.name = name.trim();
+    if (rollNumber && rollNumber.trim()) user.rollNumber = rollNumber.trim().toUpperCase();
     await user.save();
 
     res.json({
