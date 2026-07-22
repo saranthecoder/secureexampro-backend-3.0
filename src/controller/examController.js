@@ -628,7 +628,7 @@ exports.submitExam = async (req, res) => {
 exports.getExamResults = async (req, res) => {
   try {
     const { examCode } = req.params;
-    const collectionName = `${examCode}_results`;
+    const collectionName = `${examCode.toUpperCase()}_results`;
     const resultCollection = mongoose.connection.collection(collectionName);
     const results = await resultCollection.find().toArray();
     res.json(results);
@@ -1075,8 +1075,11 @@ exports.completeCodingExam = async (req, res) => {
 
     await DynamicResult.findOneAndUpdate(filter, resultData, { upsert: true, new: true });
 
-    candData.codingPhase = "completed";
-    candData.allowLocalIdeSwitch = false;
+    if (!activeCandidates[key]) {
+      activeCandidates[key] = { name: candData.name || "Candidate", timestamp: Date.now() };
+    }
+    activeCandidates[key].codingPhase = "completed";
+    activeCandidates[key].allowLocalIdeSwitch = false;
 
     // Trigger automated email scorecard report
     try {

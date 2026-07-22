@@ -45,6 +45,7 @@ const examSchema = new mongoose.Schema({
     executionMaxMarks: { type: Number, default: 50 },
     problemStatement: { type: String, default: "" },
     sampleInputOutput: { type: String, default: "" },
+    driveUrl: { type: String, default: "" },
     codeTemplate: { type: String, default: "" },
     problems: [{
       title: { type: String, default: "Problem 1" },
