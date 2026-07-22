@@ -19,6 +19,7 @@ const {
   sendAllResultsEmail,
   resetStudentAttempt,
   assignCodingSet,
+  bulkAssignCodingSet,
   updateCodingMarks,
   toggleLocalIdeAccess,
   completeCodingExam,
@@ -51,6 +52,7 @@ router.get("/status/:examCode/:email", checkStudentStatus);
 
 // 📌 Coding Hybrid Assessment Evaluation Routes
 router.post("/coding/assign-set/:examCode/:email", assignCodingSet);
+router.post("/coding/bulk-assign-set/:examCode", bulkAssignCodingSet);
 router.post("/coding/update-marks/:examCode/:email", updateCodingMarks);
 router.post("/coding/toggle-ide-access/:examCode/:email", toggleLocalIdeAccess);
 router.post("/coding/complete-exam/:examCode/:email", completeCodingExam);

@@ -1025,6 +1025,48 @@ exports.assignCodingSet = async (req, res) => {
   }
 };
 
+exports.bulkAssignCodingSet = async (req, res) => {
+  try {
+    const { examCode } = req.params;
+    const { emails, assignedSet } = req.body;
+
+    if (!Array.isArray(emails) || emails.length === 0) {
+      return res.status(400).json({ error: "No student emails provided." });
+    }
+
+    if (!assignedSet) {
+      return res.status(400).json({ error: "Assigned set name is required." });
+    }
+
+    let updatedCount = 0;
+    const prefix = `${examCode.toUpperCase()}-`;
+
+    emails.forEach((email) => {
+      if (!email) return;
+      const cleanEmail = email.toLowerCase().trim();
+      const key = `${prefix}${cleanEmail}`;
+
+      if (!activeCandidates[key]) {
+        activeCandidates[key] = { name: "Candidate", timestamp: Date.now() };
+      }
+      activeCandidates[key].assignedSet = assignedSet;
+      if (activeCandidates[key].codingPhase === "lobby" || !activeCandidates[key].codingPhase) {
+        activeCandidates[key].codingPhase = "paper_writing";
+      }
+      updatedCount++;
+    });
+
+    res.json({
+      success: true,
+      message: `Assigned ${assignedSet} to ${updatedCount} candidates successfully.`,
+      updatedCount,
+      assignedSet
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
 exports.updateCodingMarks = async (req, res) => {
   try {
     const { examCode, email } = req.params;
