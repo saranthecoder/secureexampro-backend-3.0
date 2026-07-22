@@ -413,17 +413,10 @@ exports.submitExam = async (req, res) => {
   const { studentEmail } = req.body;
   const lockKey = `${examCode}_${studentEmail}`;
 
-  if (studentEmail) {
-    if (activeSubmissions.has(lockKey)) {
-      return res.status(400).json({ message: "Already submitted" });
-    }
-    activeSubmissions.add(lockKey);
-  }
-
   try {
     const {
-      answers,
-      studentName,
+      answers = [],
+      studentName = "",
       studentRollNumber = "",
       terminated = false,
       tabSwitched = false,
@@ -437,86 +430,13 @@ exports.submitExam = async (req, res) => {
       terminatedByAdmin = false
     } = req.body;
 
-
     const exam = await Exam.findOne({ examCode });
 
     if (!exam)
       return res.status(404).json({ message: "Exam not found" });
 
-    const now = new Date();
+    const collectionName = `${examCode.toUpperCase()}_results`;
 
-    if (now < exam.startTime)
-      return res.status(400).json({ message: "Exam not started yet" });
-
-    if (now > exam.endTime)
-      return res.status(400).json({ message: "Exam ended" });
-
-    let score = 0;
-    let positiveMarks = 0;
-    let negativeMarksObtained = 0;
-    let totalMarks = 0;
-
-    exam.questions.forEach(q => {
-      const questionMaxMarks = q.marks || 0;
-      const questionNegMarks = q.negativeMarks || 0;
-      totalMarks += questionMaxMarks;
-
-      const ans = answers.find(
-        a => a.questionId === q._id.toString()
-      );
-
-      if (!ans || !ans.selectedOption) {
-        return;
-      }
-
-      const type = q.questionType || (q.isMultipleCorrect ? "MSQ" : "MCQ");
-      const studentVal = ans.selectedOption.trim();
-      const correctVal = q.correctAnswer ? q.correctAnswer.trim() : "";
-
-      let isCorrect = false;
-      let isPartial = false;
-      let partialScore = 0;
-
-      if (type === "MCQ") {
-        const selected = studentVal.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
-        const correct = correctVal.split(",").map(c => c.trim().toUpperCase()).filter(Boolean);
-        isCorrect = selected.length === 1 && selected[0] === correct[0];
-      } else if (type === "MSQ") {
-        const selected = studentVal.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
-        const correct = correctVal.split(",").map(c => c.trim().toUpperCase()).filter(Boolean);
-        const hasIncorrect = selected.some(opt => !correct.includes(opt));
-        if (!hasIncorrect) {
-          if (selected.length === correct.length) {
-            isCorrect = true;
-          } else if (selected.length > 0) {
-            isPartial = true;
-            const fraction = selected.length / correct.length;
-            partialScore = Number((questionMaxMarks * fraction).toFixed(2));
-          }
-        }
-      } else if (type === "FIB") {
-        isCorrect = compareFIB(studentVal, correctVal);
-      } else if (type === "NUM") {
-        isCorrect = compareNumerical(studentVal, correctVal);
-      } else if (type === "DES") {
-        isCorrect = compareDescriptive(studentVal, correctVal);
-      }
-
-      if (isCorrect) {
-        positiveMarks += questionMaxMarks;
-      } else if (isPartial) {
-        positiveMarks += partialScore;
-      } else {
-        negativeMarksObtained += questionNegMarks;
-      }
-    });
-
-    score = Number((positiveMarks - negativeMarksObtained).toFixed(2));
-
-    // 🔥 Auto-terminate rule (only if terminated explicitly by Admin)
-    let finalTerminated = terminatedByAdmin || false;
-
-    // 🔥 Dynamic Schema with Anti-cheating fields
     const resultSchema = new mongoose.Schema({
       studentName: {
         type: String,
@@ -586,21 +506,103 @@ exports.submitExam = async (req, res) => {
       submittedAt: Date
     }, { timestamps: true });
 
-    const collectionName = `${examCode}_results`;
-
     const DynamicResult =
       mongoose.models[collectionName] ||
       mongoose.model(collectionName, resultSchema, collectionName);
 
-    // 🔥 Prevent Duplicate Submission
-    const alreadySubmitted = await DynamicResult.findOne({
-      studentEmail
-    });
+    // 🔥 Check if already submitted in DB -> Return 200 OK so client marks as completed cleanly
+    if (studentEmail) {
+      const alreadySubmitted = await DynamicResult.findOne({
+        studentEmail: studentEmail.toLowerCase().trim()
+      });
 
-    if (alreadySubmitted) {
-      if (studentEmail) activeSubmissions.delete(lockKey);
-      return res.status(400).json({ message: "Already submitted" });
+      if (alreadySubmitted) {
+        activeSubmissions.delete(lockKey);
+        const candKey = `${examCode.toUpperCase()}-${studentEmail.toLowerCase().trim()}`;
+        delete activeCandidates[candKey];
+        delete activeCandidates[studentEmail.toLowerCase().trim()];
+
+        return res.json({
+          message: "Exam submitted successfully",
+          alreadySubmitted: true,
+          score: alreadySubmitted.score || 0,
+          positiveMarks: alreadySubmitted.positiveMarks || 0,
+          negativeMarks: alreadySubmitted.negativeMarks || 0,
+          totalMarks: alreadySubmitted.totalMarks || 0,
+          terminated: alreadySubmitted.terminated || false,
+          storedIn: collectionName
+        });
+      }
     }
+
+    let score = 0;
+    let positiveMarks = 0;
+    let negativeMarksObtained = 0;
+    let totalMarks = 0;
+
+    const safeAnswers = Array.isArray(answers) ? answers : [];
+
+    if (exam.questions && Array.isArray(exam.questions) && exam.questions.length > 0) {
+      exam.questions.forEach(q => {
+        const questionMaxMarks = q.marks || 0;
+        const questionNegMarks = q.negativeMarks || 0;
+        totalMarks += questionMaxMarks;
+
+        const ans = safeAnswers.find(
+          a => a && a.questionId && (a.questionId === q._id?.toString() || a.questionId === q.id)
+        );
+
+        if (!ans || !ans.selectedOption) {
+          return;
+        }
+
+        const type = q.questionType || (q.isMultipleCorrect ? "MSQ" : "MCQ");
+        const studentVal = ans.selectedOption.trim();
+        const correctVal = q.correctAnswer ? q.correctAnswer.trim() : "";
+
+        let isCorrect = false;
+        let isPartial = false;
+        let partialScore = 0;
+
+        if (type === "MCQ") {
+          const selected = studentVal.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+          const correct = correctVal.split(",").map(c => c.trim().toUpperCase()).filter(Boolean);
+          isCorrect = selected.length === 1 && selected[0] === correct[0];
+        } else if (type === "MSQ") {
+          const selected = studentVal.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+          const correct = correctVal.split(",").map(c => c.trim().toUpperCase()).filter(Boolean);
+          const hasIncorrect = selected.some(opt => !correct.includes(opt));
+          if (!hasIncorrect) {
+            if (selected.length === correct.length) {
+              isCorrect = true;
+            } else if (selected.length > 0) {
+              isPartial = true;
+              const fraction = selected.length / correct.length;
+              partialScore = Number((questionMaxMarks * fraction).toFixed(2));
+            }
+          }
+        } else if (type === "FIB") {
+          isCorrect = compareFIB(studentVal, correctVal);
+        } else if (type === "NUM") {
+          isCorrect = compareNumerical(studentVal, correctVal);
+        } else if (type === "DES") {
+          isCorrect = compareDescriptive(studentVal, correctVal);
+        }
+
+        if (isCorrect) {
+          positiveMarks += questionMaxMarks;
+        } else if (isPartial) {
+          positiveMarks += partialScore;
+        } else {
+          negativeMarksObtained += questionNegMarks;
+        }
+      });
+
+      score = Number((positiveMarks - negativeMarksObtained).toFixed(2));
+    }
+
+    // Auto-terminate rule (only if terminated explicitly by Admin)
+    let finalTerminated = terminatedByAdmin || false;
 
     await DynamicResult.create({
       examCode: examCode.toUpperCase(),
