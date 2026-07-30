@@ -309,7 +309,12 @@ router.get('/telemetry-history', async (req, res) => {
     await ensurePrimaryEnvServer();
     const config = await getOrCreateConfig();
     const allServers = await BackendServer.find().sort({ isPrimary: -1, createdAt: 1 });
+    const activeServers = allServers.filter(s => s.isActive);
+    const activeCount = Math.max(1, activeServers.length);
     
+    // Scale max capacity dynamically according to registered active server nodes (50 candidates per active node)
+    const maxCapacity = activeCount * 50;
+
     const Result = require('../models/Result');
     const tenMinsAgo = new Date(Date.now() - 10 * 60 * 1000);
     
@@ -320,12 +325,10 @@ router.get('/telemetry-history', async (req, res) => {
     });
 
     const activeCandidatesCount = realActiveCount;
-    
-    const maxCapacity = config.maxCapacity || 50;
-    const isCapacityExceeded = activeCandidatesCount >= maxCapacity;
+    const isCapacityExceeded = activeCandidatesCount >= Math.floor(maxCapacity * 0.8);
     const isLobbyActive = config.lobbyMode === 'force_enabled' || (config.lobbyMode === 'auto' && isCapacityExceeded);
     
-    const queueDelay = isLobbyActive ? Math.min(30, Math.max(5, Math.ceil((activeCandidatesCount - maxCapacity + 1) * 2))) : 0;
+    const queueDelay = isLobbyActive ? Math.min(45, Math.max(5, Math.ceil(((activeCandidatesCount + 1) / maxCapacity) * 15))) : 0;
 
     // Compute live split for current state
     const currentDistribution = computeTrafficSplit(allServers, config, activeCandidatesCount);
@@ -342,15 +345,23 @@ router.get('/telemetry-history', async (req, res) => {
     const graphData = [];
     const now = Date.now();
     for (let i = 9; i >= 0; i--) {
-      const timeLabel = new Date(now - i * 60 * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const totalTrafficVal = activeCandidatesCount; // Real empirical count without dummy variance
-      const isExceededPoint = totalTrafficVal >= maxCapacity;
+      const timestampPoint = now - i * 60 * 1000;
+      const timeLabel = new Date(timestampPoint).toLocaleTimeString('en-US', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      });
+
+      const totalTrafficVal = activeCandidatesCount;
+      const isExceededPoint = totalTrafficVal >= Math.floor(maxCapacity * 0.8);
       const delayPoint = (config.lobbyMode === 'force_enabled' || (config.lobbyMode === 'auto' && isExceededPoint))
-        ? Math.min(30, Math.max(5, Math.ceil((totalTrafficVal - maxCapacity + 1) * 2)))
+        ? Math.min(45, Math.max(5, Math.ceil(((totalTrafficVal + 1) / maxCapacity) * 15)))
         : 0;
 
       const pointData = {
         time: timeLabel,
+        timestamp: timestampPoint,
         activeCandidates: totalTrafficVal,
         capacityThreshold: maxCapacity,
         queueDelaySeconds: delayPoint,
@@ -372,6 +383,7 @@ router.get('/telemetry-history', async (req, res) => {
       config,
       currentActiveCandidates: activeCandidatesCount,
       maxCapacity,
+      activeServersCount: activeCount,
       isCapacityExceeded,
       isLobbyActive,
       currentQueueDelay: queueDelay,
