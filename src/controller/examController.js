@@ -261,7 +261,12 @@ exports.getAllExams = async (req, res) => {
     const { createdBy } = req.query;
     const filter = {};
     if (createdBy && createdBy.trim()) {
-      filter.createdBy = createdBy.trim();
+      const clean = createdBy.trim();
+      const escReg = clean.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.$or = [
+        { createdBy: new RegExp(`^${escReg}$`, 'i') },
+        { adminEmail: new RegExp(`^${escReg}$`, 'i') }
+      ];
     }
 
     const exams = await Exam.find(filter).sort({ createdAt: -1 });
