@@ -302,23 +302,34 @@ exports.getExamByCode = async (req, res) => {
     let isLobbyRequired = false;
     let delaySeconds = 0;
     try {
+      const TrafficConfig = require("../models/TrafficConfig");
+      const BackendServer = require("../models/BackendServer");
       const trafficConfig = await TrafficConfig.findOne();
-      const maxCap = trafficConfig?.maxCapacity || 50;
+      const allActiveServers = await BackendServer.find({ isActive: true });
+      const activeServersCount = Math.max(1, allActiveServers.length);
+
+      // Scale cluster capacity dynamically based on active registered servers (50 per node)
+      const maxCap = (trafficConfig?.maxCapacity && trafficConfig?.maxCapacity !== 50) ? trafficConfig.maxCapacity : (activeServersCount * 50);
       const lobbyMode = trafficConfig?.lobbyMode || "auto";
 
-      const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000);
-      const activeCount = await Result.countDocuments({ updatedAt: { $gte: fifteenMinsAgo } }) || 0;
+      const tenMinsAgo = new Date(Date.now() - 10 * 60 * 1000);
+      const activeCount = await Result.countDocuments({
+        updatedAt: { $gte: tenMinsAgo },
+        submittedAt: { $exists: false }
+      }) || 0;
 
       if (lobbyMode === "force_enabled") {
         isLobbyRequired = true;
-        delaySeconds = 5;
+        delaySeconds = 10;
       } else if (lobbyMode === "force_disabled") {
         isLobbyRequired = false;
         delaySeconds = 0;
       } else if (lobbyMode === "auto") {
-        if (activeCount >= maxCap) {
+        // Auto Dynamic: Trigger lobby when concurrency hits 80% of max capacity threshold
+        if (activeCount >= Math.floor(maxCap * 0.8)) {
           isLobbyRequired = true;
-          delaySeconds = Math.min(15, Math.max(5, Math.ceil((activeCount - maxCap + 1) * 2)));
+          // Stagger candidate exam starts between 5s and 45s to avoid server crashes
+          delaySeconds = Math.min(45, Math.max(5, Math.ceil(((activeCount + 1) / maxCap) * 15)));
         } else {
           isLobbyRequired = false;
           delaySeconds = 0;
