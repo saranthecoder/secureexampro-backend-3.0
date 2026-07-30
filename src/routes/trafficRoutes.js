@@ -282,7 +282,7 @@ function computeTrafficSplit(allServers, config, totalCandidates) {
   return distribution;
 }
 
-// 5. Telemetry & Dynamic Capacity History Graph Data (Including Per-Server Node Telemetry)
+// 5. Telemetry & Dynamic Capacity History Graph Data (Real-Time Empirical Candidate Telemetry)
 router.get('/telemetry-history', async (req, res) => {
   try {
     await ensurePrimaryEnvServer();
@@ -290,9 +290,15 @@ router.get('/telemetry-history', async (req, res) => {
     const allServers = await BackendServer.find().sort({ isPrimary: -1, createdAt: 1 });
     
     const Result = require('../models/Result');
-    const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000);
-    const dbCandidatesCount = await Result.countDocuments({ updatedAt: { $gte: fifteenMinsAgo } });
-    const activeCandidatesCount = dbCandidatesCount > 0 ? dbCandidatesCount : (config.currentTrafficLoad || 12);
+    const tenMinsAgo = new Date(Date.now() - 10 * 60 * 1000);
+    
+    // Count real active candidates currently writing an exam (unsubmitted & active in last 10 minutes)
+    const realActiveCount = await Result.countDocuments({
+      updatedAt: { $gte: tenMinsAgo },
+      submittedAt: { $exists: false }
+    });
+
+    const activeCandidatesCount = realActiveCount;
     
     const maxCapacity = config.maxCapacity || 50;
     const isCapacityExceeded = activeCandidatesCount >= maxCapacity;
@@ -316,8 +322,7 @@ router.get('/telemetry-history', async (req, res) => {
     const now = Date.now();
     for (let i = 9; i >= 0; i--) {
       const timeLabel = new Date(now - i * 60 * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const variance = (i === 0) ? 0 : Math.floor(Math.random() * 8) - 4;
-      const totalTrafficVal = Math.max(2, activeCandidatesCount + variance);
+      const totalTrafficVal = activeCandidatesCount; // Real empirical count without dummy variance
       const isExceededPoint = totalTrafficVal >= maxCapacity;
       const delayPoint = (config.lobbyMode === 'force_enabled' || (config.lobbyMode === 'auto' && isExceededPoint))
         ? Math.min(30, Math.max(5, Math.ceil((totalTrafficVal - maxCapacity + 1) * 2)))
