@@ -8,7 +8,6 @@ const examRoutes = require("./src/routes/examRoutes");
 const trafficRoutes = require("./src/routes/trafficRoutes");
 const cors = require("cors");
 
-
 connectDB();
 
 app.use(cors({
