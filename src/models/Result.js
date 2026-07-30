@@ -22,6 +22,19 @@ const resultSchema = new mongoose.Schema({
     selectedOption: String
   }],
 
+  codeSubmissions: [{
+    questionId: String,
+    language: String,
+    code: String,
+    openTestCasesPassed: { type: Number, default: 0 },
+    openTestCasesTotal: { type: Number, default: 0 },
+    hiddenTestCasesPassed: { type: Number, default: 0 },
+    hiddenTestCasesTotal: { type: Number, default: 0 },
+    totalTestCasesPassed: { type: Number, default: 0 },
+    totalTestCasesCount: { type: Number, default: 0 },
+    scoreAwarded: { type: Number, default: 0 }
+  }],
+
   score: {
     type: Number,
     default: 0

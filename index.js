@@ -5,6 +5,7 @@ const connectDB = require("./src/config/db");
 
 const authRoutes = require("./src/routes/authRoutes");
 const examRoutes = require("./src/routes/examRoutes");
+const trafficRoutes = require("./src/routes/trafficRoutes");
 const cors = require("cors");
 
 
@@ -20,6 +21,7 @@ app.use(express.json({ limit: "10mb" }));
 
 app.use("/api/auth", authRoutes);
 app.use("/api/exam", examRoutes);
+app.use("/api/traffic", trafficRoutes);
 
 app.get("/", (req, res) => {
   res.send("Exam Backend Running");

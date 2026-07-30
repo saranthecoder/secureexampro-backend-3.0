@@ -23,10 +23,15 @@ const {
   updateCodingMarks,
   toggleLocalIdeAccess,
   completeCodingExam,
-  getStudentReports
+  getStudentReports,
+  toggleResultRelease,
+  sendScores,
+  executeCode
 } = require("../controller/examController");
 
 const upload = multer({ dest: "uploads/" });
+
+router.post("/execute-code", executeCode);
 
 router.post(
   "/create",
@@ -37,6 +42,8 @@ router.post(
 router.get("/all", getAllExams);
 router.get("/results/:examCode", getExamResults);
 router.get("/student-reports/:email", getStudentReports);
+router.post("/:examCode/release-results", toggleResultRelease);
+router.post("/:examCode/send-scores", sendScores);
 router.put("/update/:id", updateExam);
 router.delete("/delete/:id", deleteExam);
 router.put("/proctor-config/:examCode", updateProctorConfig);

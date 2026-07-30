@@ -1,40 +1,65 @@
 const User = require("../models/User");
-const { Otp, OtpLimit } = require("../models/Otp");
-const { sendMail } = require("../config/mail");
 
-const OTP_LIMIT = 5;
-
-exports.signup = async (req, res) => {
-  return exports.studentLogin(req, res);
-};
-
-// ======================== DIRECT STUDENT LOGIN VIA EMAIL & ROLL NUMBER ========================
+// ======================== STUDENT LOGIN VIA REGISTER ID & 6-DIGIT PIN ========================
 exports.studentLogin = async (req, res) => {
   try {
-    const { email, rollNumber, name } = req.body;
+    const { registerId, rollNumber, pin, email, name } = req.body;
 
-    if (!email || !rollNumber) {
-      return res.status(400).json({ message: "Candidate Email and Roll Number are required." });
+    const idToSearch = (registerId || rollNumber || "").trim().toUpperCase();
+
+    if (!idToSearch) {
+      return res.status(400).json({ message: "Register ID / Roll Number is required." });
     }
 
-    const cleanEmail = email.toLowerCase().trim();
-    const cleanRoll = rollNumber.trim().toUpperCase();
-    const cleanName = name && name.trim() ? name.trim() : cleanEmail.split("@")[0];
+    if (!pin) {
+      return res.status(400).json({ message: "6-digit PIN is required." });
+    }
 
-    let user = await User.findOne({ email: cleanEmail });
+    const cleanPin = String(pin).trim();
+
+    // Find student by registerId or rollNumber or email
+    let user = await User.findOne({
+      $or: [
+        { registerId: idToSearch },
+        { rollNumber: idToSearch },
+        { email: (email || "").toLowerCase().trim() }
+      ]
+    });
 
     if (!user) {
+      // If student was not pre-imported by admin, allow auto-creation with default initial PIN for convenience
+      const cleanEmail = email ? email.toLowerCase().trim() : `${idToSearch.toLowerCase()}@student.local`;
+      const cleanName = name && name.trim() ? name.trim() : idToSearch;
+
       user = await User.create({
         name: cleanName,
         email: cleanEmail,
-        rollNumber: cleanRoll,
-        role: "student"
+        rollNumber: idToSearch,
+        registerId: idToSearch,
+        pin: cleanPin,
+        role: "student",
+        isPinUpdated: false
       });
-    } else {
-      user.rollNumber = cleanRoll;
-      if (name && name.trim()) user.name = name.trim();
-      await user.save();
+
+      return res.json({
+        message: "Student logged in successfully",
+        user
+      });
     }
+
+    // Verify 6-digit PIN if set on user
+    if (user.pin && user.pin !== cleanPin) {
+      return res.status(400).json({ message: "Invalid 6-digit PIN. Please verify your assigned PIN." });
+    }
+
+    // If PIN wasn't set yet on existing user, update it
+    if (!user.pin) {
+      user.pin = cleanPin;
+    }
+
+    if (idToSearch && !user.registerId) user.registerId = idToSearch;
+    if (idToSearch && !user.rollNumber) user.rollNumber = idToSearch;
+    await user.save();
 
     return res.json({
       message: "Login successful",
@@ -45,38 +70,86 @@ exports.studentLogin = async (req, res) => {
   }
 };
 
+// ======================== UPDATE STUDENT 6-DIGIT PIN ========================
+exports.updatePin = async (req, res) => {
+  try {
+    const { userId, registerId, oldPin, newPin } = req.body;
+
+    if (!newPin || String(newPin).trim().length !== 6) {
+      return res.status(400).json({ message: "New PIN must be a 6-digit numeric code." });
+    }
+
+    let user;
+    if (userId) {
+      user = await User.findById(userId);
+    } else if (registerId) {
+      const cleanReg = registerId.trim().toUpperCase();
+      user = await User.findOne({ $or: [{ registerId: cleanReg }, { rollNumber: cleanReg }] });
+    }
+
+    if (!user) {
+      return res.status(404).json({ message: "Student record not found." });
+    }
+
+    if (user.pin && oldPin && user.pin !== String(oldPin).trim()) {
+      return res.status(400).json({ message: "Incorrect existing PIN." });
+    }
+
+    user.pin = String(newPin).trim();
+    user.isPinUpdated = true;
+    await user.save();
+
+    return res.json({
+      message: "PIN updated successfully.",
+      user
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ======================== ADMIN & EXAMINER LOGIN ========================
 exports.login = async (req, res) => {
   try {
-    const { email, password, rollNumber } = req.body;
+    const { email, password, registerId, rollNumber, pin } = req.body;
 
-    // If rollNumber is passed, handle as direct student login
-    if (rollNumber) {
+    // Direct student login delegation
+    if (registerId || (rollNumber && pin)) {
       return exports.studentLogin(req, res);
     }
 
-    if (email === "coreadmin@secureexam.com") {
-      const user = await User.findOne({ email });
-      if (!user || user.password !== password) {
-        return res.status(400).json({ message: "Invalid credentials" });
+    const cleanEmail = (email || "").toLowerCase().trim();
+
+    // 1. Core Admin check
+    if (cleanEmail === "coreadmin@secureexam.com" || cleanEmail === "admin@secureexam.com") {
+      let adminUser = await User.findOne({ email: cleanEmail });
+      if (!adminUser) {
+        adminUser = await User.create({
+          name: "System Admin",
+          email: cleanEmail,
+          password: password || "Secure@123",
+          role: "admin"
+        });
+      } else if (adminUser.password !== password) {
+        return res.status(400).json({ message: "Invalid admin password" });
       }
-      return res.json({
-        message: "Login successful",
-        user
-      });
+      return res.json({ message: "Admin login successful", user: adminUser });
     }
 
-    const user = await User.findOne({ email });
-    if (user && user.role === "admin") {
+    // 2. Database User check (Admin / Examiner / Student)
+    const user = await User.findOne({ email: cleanEmail });
+    if (!user) {
+      return res.status(400).json({ message: "User account not found." });
+    }
+
+    if (user.role === "admin" || user.role === "examiner") {
       if (user.password !== password) {
-        return res.status(400).json({ message: "Invalid credentials" });
+        return res.status(400).json({ message: "Invalid credentials." });
       }
-      return res.json({
-        message: "Login successful",
-        user
-      });
+      return res.json({ message: "Login successful", user });
     }
 
-    if (user && user.role === "student") {
+    if (user.role === "student") {
       return exports.studentLogin(req, res);
     }
 
@@ -86,232 +159,201 @@ exports.login = async (req, res) => {
   }
 };
 
-// ======================== SEND OTP ========================
-// Accepts mode: "signup" | "login" | "update_profile"
-exports.sendOtp = async (req, res) => {
-  let name = "";
-  let email = "";
-  let rollNumber = "";
-  let cleanEmail = "";
-  let otpCode = "";
-
+// ======================== CREATE EXAMINER ACCOUNT (ADMIN) ========================
+exports.createExaminer = async (req, res) => {
   try {
-    const mode = req.body.mode || "signup";
-    ({ name, email, rollNumber } = req.body);
+    const { name, email, password, createdBy } = req.body;
 
-    if (!email) {
-      return res.status(400).json({ message: "Email is required." });
-    }
-
-    cleanEmail = email.toLowerCase().trim();
-
-    // ---------- Mode-specific validation ----------
-    if (mode === "signup") {
-      if (!name || !rollNumber) {
-        return res.status(400).json({ message: "Name, email, and roll number are required for signup." });
-      }
-      // Check if student already exists
-      const existing = await User.findOne({ email: cleanEmail });
-      if (existing) {
-        return res.status(400).json({ message: "An account with this email already exists. Please use Login instead." });
-      }
-    } else if (mode === "login") {
-      // Check if student exists
-      const existing = await User.findOne({ email: cleanEmail, role: "student" });
-      if (!existing) {
-        return res.status(404).json({ message: "No student account found with this email. Please Sign Up first." });
-      }
-      // Use existing student details for OTP email
-      name = existing.name || "Student";
-      rollNumber = existing.rollNumber || "";
-    } else if (mode === "update_profile") {
-      // Profile update — student must exist
-      const existing = await User.findOne({ email: cleanEmail, role: "student" });
-      if (!existing) {
-        return res.status(404).json({ message: "Student account not found." });
-      }
-      name = name || existing.name || "Student";
-      rollNumber = rollNumber || existing.rollNumber || "";
-    }
-
-    // ---------- Enforce 5 OTP limit per email (12-hour window) ----------
-    const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
-    let limitRecord = await OtpLimit.findOne({ email: cleanEmail });
-
-    if (limitRecord) {
-      const windowExpired = Date.now() - new Date(limitRecord.firstSentAt).getTime() >= TWELVE_HOURS_MS;
-      if (windowExpired) {
-        // Reset limit window after 12 hours
-        limitRecord.count = 1;
-        limitRecord.firstSentAt = new Date();
-        await limitRecord.save();
-      } else if (limitRecord.count >= OTP_LIMIT) {
-        return res.status(429).json({
-          message: `Maximum ${OTP_LIMIT} OTP email attempts reached for this email ID. Please try again after 12 hours.`,
-          otpCount: limitRecord.count,
-          remainingAttempts: 0
-        });
-      } else {
-        limitRecord.count += 1;
-        await limitRecord.save();
-      }
-    } else {
-      limitRecord = await OtpLimit.create({ email: cleanEmail, count: 1, firstSentAt: new Date() });
-    }
-
-    const currentCount = limitRecord.count;
-    const remainingAttempts = OTP_LIMIT - currentCount;
-
-    // ---------- Generate and store OTP ----------
-    otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
-
-    await Otp.findOneAndUpdate(
-      { email: cleanEmail },
-      { name, rollNumber, otp: otpCode, expiresAt, mode },
-      { upsert: true, new: true }
-    );
-
-    // ---------- Send OTP email ----------
-    const modeLabel = mode === "signup" ? "Sign Up" : mode === "login" ? "Login" : "Profile Update";
-
-    const mailOptions = {
-      from: `"Secure Exam Pro" <${process.env.BREVO_SMTP_SENDER || "aspiringmind05@gmail.com"}>`,
-      to: cleanEmail,
-      subject: `Verification OTP (${modeLabel}) - Secure Exam Pro`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 12px;">
-          <h2 style="color: #1e3a8a; text-align: center;">Secure Exam Pro</h2>
-          <p>Hello <strong>${name}</strong>,</p>
-          ${rollNumber ? `<p>Your Roll Number: <strong>${rollNumber}</strong></p>` : ""}
-          <p>You have requested an OTP for <strong>${modeLabel}</strong>. Please use the following verification code. This OTP is valid for the next 5 minutes.</p>
-          <div style="text-align: center; margin: 25px 0;">
-            <span style="font-size: 28px; font-weight: bold; background: #eff6ff; color: #1d4ed8; padding: 12px 24px; border-radius: 8px; border: 1px dashed #bfdbfe; letter-spacing: 4px;">
-              ${otpCode}
-            </span>
-          </div>
-          <p style="font-size: 11px; color: #94a3b8;">OTP attempts used: ${currentCount}/${OTP_LIMIT} for this email.</p>
-          <p style="font-size: 11px; color: #64748b;">If you did not initiate this request, please disregard this email.</p>
-        </div>
-      `
-    };
-
-    await sendMail(mailOptions);
-    res.json({
-      message: "OTP sent successfully.",
-      otpCount: currentCount,
-      remainingAttempts
-    });
-
-  } catch (error) {
-    console.error("Error sending OTP:", error);
-    console.log("\n========================================================");
-    console.log(`🔑 EMERGENCY OTP BYPASS (SMTP AUTHENTICATION FAILED)`);
-    console.log(`Candidate Name: ${name}`);
-    console.log(`Candidate Email: ${cleanEmail}`);
-    console.log(`Candidate Roll Number: ${rollNumber}`);
-    console.log(`Generated OTP: ${otpCode}`);
-    console.log("========================================================\n");
-    
-    res.status(500).json({ 
-      message: "Mail service authentication failed. The OTP has been logged to the server console for local testing.",
-      error: error.message 
-    });
-  }
-};
-
-// ======================== VERIFY OTP ========================
-exports.verifyOtp = async (req, res) => {
-  try {
-    const { email, otp } = req.body;
-
-    if (!email || !otp) {
-      return res.status(400).json({ message: "Email and OTP are required." });
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: "Name, email, and password are required for examiner account creation." });
     }
 
     const cleanEmail = email.toLowerCase().trim();
-    const cleanOtp = otp.trim();
 
-    const record = await Otp.findOne({ email: cleanEmail });
-
-    if (!record || record.otp !== cleanOtp) {
-      return res.status(400).json({ message: "Invalid or expired OTP." });
+    const existing = await User.findOne({ email: cleanEmail });
+    if (existing) {
+      return res.status(400).json({ message: "An account with this email already exists." });
     }
 
-    const mode = record.mode || "signup";
+    const examiner = await User.create({
+      name: name.trim(),
+      email: cleanEmail,
+      password: password,
+      role: "examiner",
+      createdBy: createdBy || "admin"
+    });
 
-    await Otp.deleteOne({ _id: record._id });
-
-    if (mode === "signup") {
-      // Create new student
-      let user = await User.findOne({ email: cleanEmail });
-      if (user) {
-        return res.status(400).json({ message: "Account already exists. Please login instead." });
-      }
-      user = await User.create({
-        name: record.name,
-        email: cleanEmail,
-        rollNumber: record.rollNumber,
-        role: "student"
-      });
-      return res.json({
-        message: "Signup successful",
-        user
-      });
-
-    } else if (mode === "login") {
-      // Login existing student
-      const user = await User.findOne({ email: cleanEmail });
-      if (!user) {
-        return res.status(404).json({ message: "Student not found." });
-      }
-      return res.json({
-        message: "Login successful",
-        user
-      });
-
-    } else if (mode === "update_profile") {
-      // Handled by updateProfile endpoint
-      return res.json({
-        message: "OTP verified for profile update.",
-        verified: true
-      });
-    }
-
-    return res.status(400).json({ message: "Invalid mode." });
-
+    res.status(201).json({
+      message: "Examiner account created successfully",
+      examiner
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
-// ======================== UPDATE PROFILE ========================
+// ======================== GET ALL EXAMINERS ========================
+exports.getExaminers = async (req, res) => {
+  try {
+    const examiners = await User.find({ role: "examiner" }).sort({ createdAt: -1 });
+    res.json(examiners);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ======================== BULK IMPORT STUDENTS (ADMIN / EXAMINER) ========================
+exports.bulkImportStudents = async (req, res) => {
+  try {
+    const { students, createdBy } = req.body; // Array of { registerId, name, email, pin }
+
+    if (!Array.isArray(students) || students.length === 0) {
+      return res.status(400).json({ message: "A non-empty list of students is required." });
+    }
+
+    const createdList = [];
+    const updatedList = [];
+    const errors = [];
+
+    for (let index = 0; index < students.length; index++) {
+      const item = students[index];
+      const regId = (item.registerId || item.rollNumber || "").trim().toUpperCase();
+      const sName = (item.name || regId || "Student").trim();
+      const sEmail = item.email ? item.email.toLowerCase().trim() : `${regId.toLowerCase()}@student.local`;
+      const sPin = String(item.pin || item.password || "123456").trim() || "123456";
+
+      if (!regId) {
+        errors.push(`Row ${index + 1}: Missing Register ID / Roll Number`);
+        continue;
+      }
+
+      let existing = await User.findOne({
+        $or: [{ registerId: regId }, { rollNumber: regId }, { email: sEmail }]
+      });
+
+      if (existing) {
+        existing.name = sName;
+        existing.email = sEmail;
+        existing.registerId = regId;
+        existing.rollNumber = regId;
+        if (sPin) existing.pin = sPin;
+        await existing.save();
+        updatedList.push(existing);
+      } else {
+        const newUser = await User.create({
+          name: sName,
+          email: sEmail,
+          registerId: regId,
+          rollNumber: regId,
+          pin: sPin,
+          role: "student",
+          createdBy: createdBy || "admin",
+          isPinUpdated: false
+        });
+        createdList.push(newUser);
+      }
+    }
+
+    res.json({
+      message: `Bulk import processed successfully. ${createdList.length} created, ${updatedList.length} updated.`,
+      createdCount: createdList.length,
+      updatedCount: updatedList.length,
+      errors
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to process bulk import", error: error.message });
+  }
+};
+
+// ======================== GET ALL STUDENTS ========================
+exports.getStudents = async (req, res) => {
+  try {
+    const students = await User.find({ role: "student" }).sort({ createdAt: -1 });
+    const formatted = students.map(s => {
+      const doc = s.toObject();
+      if (!doc.pin) doc.pin = "123456";
+      return doc;
+    });
+    res.json(formatted);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Legacy fallback methods to preserve interface compatibility
+exports.signup = exports.studentLogin;
+exports.sendOtp = async (req, res) => res.json({ message: "OTP flow deprecated; use Register ID and PIN." });
+exports.verifyOtp = async (req, res) => res.json({ message: "OTP verification deprecated." });
 exports.updateProfile = async (req, res) => {
   try {
-    const { email, name, rollNumber } = req.body;
-
-    if (!email) {
-      return res.status(400).json({ message: "Candidate email is required." });
-    }
-
-    const cleanEmail = email.toLowerCase().trim();
-
-    // Update user profile
-    const user = await User.findOne({ email: cleanEmail });
-    if (!user) {
-      return res.status(404).json({ message: "Student not found." });
-    }
-
-    if (name && name.trim()) user.name = name.trim();
-    if (rollNumber && rollNumber.trim()) user.rollNumber = rollNumber.trim().toUpperCase();
-    await user.save();
-
-    res.json({
-      message: "Profile updated successfully.",
-      user
+    const { email, name, rollNumber, registerId } = req.body;
+    const user = await User.findOne({
+      $or: [{ email: (email || "").toLowerCase().trim() }, { registerId }, { rollNumber }]
     });
-
+    if (!user) return res.status(404).json({ message: "Student not found." });
+    if (name) user.name = name.trim();
+    if (rollNumber) user.rollNumber = rollNumber.trim().toUpperCase();
+    if (registerId) user.registerId = registerId.trim().toUpperCase();
+    await user.save();
+    res.json({ message: "Profile updated successfully.", user });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+};
+
+exports.updateStudent = async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const { name, registerId, rollNumber, email, pin } = req.body;
+
+    const user = await User.findById(studentId);
+    if (!user) {
+      return res.status(404).json({ message: "Student account not found." });
+    }
+
+    if (name !== undefined) user.name = name.trim();
+    if (registerId !== undefined) {
+      user.registerId = registerId.trim().toUpperCase();
+      user.rollNumber = registerId.trim().toUpperCase();
+    }
+    if (rollNumber !== undefined) user.rollNumber = rollNumber.trim().toUpperCase();
+    if (email !== undefined) user.email = email.trim().toLowerCase();
+    if (pin !== undefined && pin.trim()) user.pin = pin.trim();
+
+    await user.save();
+    res.json({ message: "Student account updated successfully.", student: user });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to update student account.", error: error.message });
+  }
+};
+
+exports.deleteStudent = async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    await User.findByIdAndDelete(studentId);
+    res.json({ message: "Student account deleted successfully." });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to delete student account.", error: error.message });
+  }
+};
+
+exports.cleanupNARecords = async (req, res) => {
+  try {
+    const query = {
+      role: "student",
+      $or: [
+        { registerId: { $in: [null, "", "N/A", "NA"] } },
+        { rollNumber: { $in: [null, "", "N/A", "NA"] } },
+        { registerId: { $exists: false } },
+        { rollNumber: { $exists: false } }
+      ]
+    };
+    const result = await User.deleteMany(query);
+    res.json({
+      message: `Successfully deleted ${result.deletedCount} student records with missing or N/A Roll Numbers.`,
+      deletedCount: result.deletedCount
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to cleanup N/A student records.", error: error.message });
   }
 };

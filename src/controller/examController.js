@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Exam = require("../models/Exam");
 const Result = require("../models/Result");
+const TrafficConfig = require("../models/TrafficConfig");
 const XLSX = require("xlsx");
 const fs = require("fs");
 
@@ -53,7 +54,7 @@ function compareDescriptive(studentAns, correctAns) {
 
 exports.createExam = async (req, res) => {
   try {
-    const { title, examCode, duration, startTime, endTime, adminEmail, cameraMonitor } = req.body;
+    const { title, examCode, duration, startTime, endTime, adminEmail, createdBy, cameraMonitor } = req.body;
 
     examCodeUpper = examCode.toUpperCase().trim();
 
@@ -194,6 +195,19 @@ exports.createExam = async (req, res) => {
           imageUrl: q.imageUrl ? q.imageUrl.toString().trim() : ""
         };
       });
+    } else if (req.body.onlineCodingConfig) {
+      try {
+        const codingPayload = typeof req.body.onlineCodingConfig === "string" ? JSON.parse(req.body.onlineCodingConfig) : req.body.onlineCodingConfig;
+        parsedQuestions = codingPayload.map(q => ({
+          question: q.question || "Online Coding Problem 1",
+          marks: q.marks ? Number(q.marks) : 100,
+          questionType: "CODING",
+          starterTemplates: q.starterTemplates || {},
+          testCases: q.testCases || []
+        }));
+      } catch (e) {
+        console.error("Failed to parse onlineCodingConfig:", e);
+      }
     }
 
     let parsedSets = [];
@@ -212,9 +226,18 @@ exports.createExam = async (req, res) => {
       startTime,
       endTime,
       questions: parsedQuestions,
-      createdBy: adminEmail,
-      cameraMonitor: cameraMonitor === "true" || cameraMonitor === true,
-      dispatchPolicy: req.body.dispatchPolicy || "none",
+      createdBy: createdBy || adminEmail || "",
+      isResultReleased: false,
+      cameraMonitor: req.body.cameraMonitor === "true" || req.body.cameraMonitor === true,
+      aiProctorActive: req.body.aiProctorActive === "true" || req.body.aiProctorActive === true,
+      micMonitor: req.body.micMonitor === "true" || req.body.micMonitor === true,
+      screenShareMonitor: req.body.screenShareMonitor === "true" || req.body.screenShareMonitor === true,
+      trackTabSwitches: req.body.trackTabSwitches === "true" || req.body.trackTabSwitches === true,
+      trackFullScreenExit: req.body.trackFullScreenExit === "true" || req.body.trackFullScreenExit === true,
+      trackInternetIssues: req.body.trackInternetIssues === "true" || req.body.trackInternetIssues === true,
+      maxTabSwitches: Number(req.body.maxTabSwitches || 3),
+      maxFullScreenExits: Number(req.body.maxFullScreenExits || 3),
+      dispatchPolicy: req.body.dispatchPolicy || "manual",
       assessmentType: req.body.assessmentType || "standard",
       questionSets: parsedSets
     });
@@ -232,10 +255,16 @@ exports.createExam = async (req, res) => {
   }
 };
 
-// 🔥 GET ALL EXAMS
+// 🔥 GET ALL EXAMS (Filtered by createdBy for Examiners)
 exports.getAllExams = async (req, res) => {
   try {
-    const exams = await Exam.find().sort({ createdAt: -1 });
+    const { createdBy } = req.query;
+    const filter = {};
+    if (createdBy && createdBy.trim()) {
+      filter.createdBy = createdBy.trim();
+    }
+
+    const exams = await Exam.find(filter).sort({ createdAt: -1 });
 
     res.status(200).json({
       success: true,
@@ -269,15 +298,35 @@ exports.getExamByCode = async (req, res) => {
     const hasNegativeMarking = exam.questions.some((q) => (q.negativeMarks || 0) > 0);
     const maxNegativeMark = hasNegativeMarking ? Math.max(...exam.questions.map(q => q.negativeMarks || 0)) : 0;
 
-    const getStaggeredDelay = (emailStr) => {
-      if (!emailStr) return 0;
-      let hash = 0;
-      for (let i = 0; i < emailStr.length; i++) {
-        hash = emailStr.charCodeAt(i) + ((hash << 5) - hash);
+    // Dynamic Lobby Check based on Traffic Capacity & Settings
+    let isLobbyRequired = false;
+    let delaySeconds = 0;
+    try {
+      const trafficConfig = await TrafficConfig.findOne();
+      const maxCap = trafficConfig?.maxCapacity || 50;
+      const lobbyMode = trafficConfig?.lobbyMode || "auto";
+
+      const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000);
+      const activeCount = await Result.countDocuments({ updatedAt: { $gte: fifteenMinsAgo } }) || 0;
+
+      if (lobbyMode === "force_enabled") {
+        isLobbyRequired = true;
+        delaySeconds = 5;
+      } else if (lobbyMode === "force_disabled") {
+        isLobbyRequired = false;
+        delaySeconds = 0;
+      } else if (lobbyMode === "auto") {
+        if (activeCount >= maxCap) {
+          isLobbyRequired = true;
+          delaySeconds = Math.min(15, Math.max(5, Math.ceil((activeCount - maxCap + 1) * 2)));
+        } else {
+          isLobbyRequired = false;
+          delaySeconds = 0;
+        }
       }
-      // Stagger entry over 60 seconds (500-student free tier adaptive mode)
-      return Math.abs(hash) % 60;
-    };
+    } catch (err) {
+      isLobbyRequired = false;
+    }
 
     const startTimeMs = new Date(exam.startTime).getTime();
     const nowMs = now.getTime();
@@ -309,9 +358,8 @@ exports.getExamByCode = async (req, res) => {
       });
     }
 
-    // Lobby waiting room staggered check (only if student email is provided)
-    if (email) {
-      const delaySeconds = getStaggeredDelay(email.toLowerCase().trim());
+    // Lobby waiting room staggered check (only if student email is provided & traffic capacity requires lobby)
+    if (email && isLobbyRequired && delaySeconds > 0) {
       const allowedTimeMs = startTimeMs + (delaySeconds * 1000);
       if (nowMs < allowedTimeMs) {
         return res.json({
@@ -1496,6 +1544,22 @@ exports.getStudentReports = async (req, res) => {
       });
 
       if (resultDoc) {
+        if (!exam.isResultReleased) {
+          studentReports.push({
+            examId: exam._id,
+            examCode: exam.examCode,
+            examTitle: exam.title,
+            assessmentType: exam.assessmentType || "standard",
+            duration: exam.duration,
+            startTime: exam.startTime,
+            endTime: exam.endTime,
+            isResultReleased: false,
+            statusMessage: "Results pending examiner release",
+            score: null
+          });
+          continue;
+        }
+
         // Build detailed question analysis
         const questionAnalysis = [];
 
@@ -1652,7 +1716,513 @@ exports.getStudentReports = async (req, res) => {
   }
 };
 
+// ==========================================
+// 🔓 TOGGLE RESULT RELEASE (EXAMINER CONTROL)
+// ==========================================
+exports.toggleResultRelease = async (req, res) => {
+  try {
+    const { examCode } = req.params;
+    const { isResultReleased } = req.body;
 
+    const exam = await Exam.findOne({ examCode: examCode.toUpperCase().trim() });
+    if (!exam) {
+      return res.status(404).json({ message: "Exam not found" });
+    }
+
+    exam.isResultReleased = isResultReleased !== undefined ? isResultReleased : !exam.isResultReleased;
+    await exam.save();
+
+    res.json({
+      message: `Exam results ${exam.isResultReleased ? 'released to students' : 'hidden from students'} successfully.`,
+      examCode: exam.examCode,
+      isResultReleased: exam.isResultReleased
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ==========================================
+// 📧 MANUAL SEND SCORES TO STUDENTS (EXAMINER CONTROL)
+// ==========================================
+const { sendMail } = require("../config/mail");
+
+exports.sendScores = async (req, res) => {
+  try {
+    const { examCode } = req.params;
+    const cleanCode = examCode.toUpperCase().trim();
+
+    const exam = await Exam.findOne({ examCode: cleanCode });
+    if (!exam) {
+      return res.status(404).json({ message: "Exam not found" });
+    }
+
+    const collectionName = `${cleanCode}_results`;
+    const resultCollection = mongoose.connection.collection(collectionName);
+    const results = await resultCollection.find({}).toArray();
+
+    if (!results || results.length === 0) {
+      return res.status(400).json({ message: "No submitted student results found for this exam." });
+    }
+
+    let sentCount = 0;
+    let failedCount = 0;
+
+    for (const r of results) {
+      if (!r.studentEmail) continue;
+      try {
+        const mailOptions = {
+          from: `"Secure Exam Pro" <${process.env.BREVO_SMTP_SENDER || "aspiringmind05@gmail.com"}>`,
+          to: r.studentEmail,
+          subject: `Official Scorecard - ${exam.title} (${cleanCode})`,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+              <h2 style="color: #1e3a8a; text-align: center; margin-bottom: 5px;">Secure Exam Pro</h2>
+              <p style="text-align: center; color: #64748b; font-size: 13px; margin-top: 0;">Official Performance Scorecard</p>
+              <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 15px 0;" />
+              <p>Hello <strong>${r.studentName || 'Student'}</strong>,</p>
+              <p>Your results for <strong>${exam.title}</strong> (${cleanCode}) have been officially evaluated and released by the examiner.</p>
+              <div style="background: #f8fafc; border: 1px solid #cbd5e1; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                <p style="margin: 5px 0;">Candidate Email: <strong>${r.studentEmail}</strong></p>
+                ${r.studentRollNumber ? `<p style="margin: 5px 0;">Roll Number: <strong>${r.studentRollNumber}</strong></p>` : ""}
+                <p style="margin: 5px 0; font-size: 18px; color: #1d4ed8;">Final Score: <strong>${r.score || 0} / ${r.totalMarks || 100}</strong></p>
+              </div>
+              <p style="font-size: 12px; color: #64748b;">You can also view your comprehensive diagnostic breakdown in the Student Portal.</p>
+            </div>
+          `
+        };
+        await sendMail(mailOptions);
+        await resultCollection.updateOne({ _id: r._id }, { $set: { isEmailed: true } });
+        sentCount++;
+      } catch (err) {
+        console.error(`Failed to send email to ${r.studentEmail}:`, err);
+        failedCount++;
+      }
+    }
+
+    res.json({
+      message: `Scorecard emails dispatched manually by examiner. Sent: ${sentCount}, Failed: ${failedCount}`,
+      sentCount,
+      failedCount
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// 🔥 CODE EXECUTION ENGINE FOR PAPER CODE / CODING ROUND
+const { execFile } = require("child_process");
+const path = require("path");
+const os = require("os");
+
+function runCommandWithTimeout(cmd, args, inputData, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    let isSettled = false;
+
+    try {
+      const child = execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+        if (isSettled) return;
+        isSettled = true;
+        if (err) {
+          if (err.killed) {
+            resolve({ success: false, output: "", error: "Execution Timed Out (Limit: 4s)" });
+          } else {
+            resolve({ success: false, output: stdout || "", error: stderr || err.message });
+          }
+        } else {
+          resolve({ success: true, output: stdout, error: stderr });
+        }
+      });
+
+      if (child.stdin) {
+        const payload = (inputData && inputData.trim().length > 0) ? inputData : "\n";
+        child.stdin.write(payload);
+        child.stdin.end();
+      }
+    } catch (e) {
+      if (!isSettled) {
+        isSettled = true;
+        resolve({ success: false, output: "", error: e.message });
+      }
+    }
+  });
+}
+
+function validateJavaCode(code) {
+  const lines = code.split("\n");
+  let inMethod = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const lineNum = i + 1;
+    const rawLine = lines[i];
+    const line = rawLine.replace(/\/\/.*$/, "").trim();
+
+    if (!line) continue;
+    if (line.startsWith("/*") || line.startsWith("*") || line.endsWith("*/")) continue;
+
+    if (line.endsWith("{") || line.includes("static void main")) {
+      inMethod = true;
+      continue;
+    }
+    if (line === "}") continue;
+
+    if (inMethod) {
+      if (
+        !line.endsWith(";") &&
+        !line.endsWith("{") &&
+        !line.endsWith("}") &&
+        !line.startsWith("public") &&
+        !line.startsWith("private") &&
+        !line.startsWith("protected") &&
+        !line.startsWith("class") &&
+        !line.startsWith("import") &&
+        !line.startsWith("package") &&
+        !line.startsWith("if") &&
+        !line.startsWith("else") &&
+        !line.startsWith("for") &&
+        !line.startsWith("while") &&
+        !line.startsWith("try") &&
+        !line.startsWith("catch")
+      ) {
+        return {
+          valid: false,
+          error: `Compilation Error:\nMain.java:${lineNum}: error: ';' expected\n    ${rawLine.trim()}\n    ^`
+        };
+      }
+    }
+  }
+
+  return { valid: true };
+}
+
+function formatLanguageError(lang, rawError, exitCode, signal) {
+  const errStr = (rawError || "").trim();
+  const langLower = (lang || "").toLowerCase();
+
+  // Signal / Exit Code Crashes (C / C++)
+  if (signal === "SIGSEGV" || exitCode === 139) {
+    return { errorType: "Runtime Error", formattedError: "Runtime Error: Segmentation Fault (SIGSEGV)\nInvalid memory access or null pointer dereference." };
+  }
+  if (signal === "SIGFPE" || exitCode === 136) {
+    return { errorType: "Runtime Error", formattedError: "Runtime Error: Floating Point Exception (SIGFPE)\nDivision by zero or arithmetic exception." };
+  }
+  if (signal === "SIGABRT" || exitCode === 134) {
+    return { errorType: "Runtime Error", formattedError: "Runtime Error: Process Aborted (SIGABRT)" };
+  }
+
+  if (langLower === "python" || langLower === "py") {
+    if (errStr.includes("SyntaxError:") || errStr.includes("IndentationError:") || errStr.includes("TabError:")) {
+      return { errorType: "Syntax Error", formattedError: `Syntax Error:\n${errStr}` };
+    }
+    if (errStr.includes("Error:") || errStr.includes("Traceback")) {
+      return { errorType: "Runtime Error", formattedError: `Runtime Error:\n${errStr}` };
+    }
+  }
+
+  if (langLower === "javascript" || langLower === "js") {
+    if (errStr.includes("SyntaxError:")) {
+      return { errorType: "Syntax Error", formattedError: `Syntax Error:\n${errStr}` };
+    }
+    if (errStr.includes("ReferenceError:") || errStr.includes("TypeError:") || errStr.includes("RangeError:") || errStr.includes("Error:")) {
+      return { errorType: "Runtime Error", formattedError: `Runtime Error:\n${errStr}` };
+    }
+  }
+
+  if (langLower === "java") {
+    if (errStr.includes("error:") || errStr.includes("Compilation Error")) {
+      return { errorType: "Compilation Error", formattedError: errStr.startsWith("Compilation Error:") ? errStr : `Compilation Error:\n${errStr}` };
+    }
+    if (errStr.includes("Exception") || errStr.includes("Error")) {
+      return { errorType: "Runtime Error", formattedError: `Runtime Error:\n${errStr}` };
+    }
+  }
+
+  if (langLower === "cpp" || langLower === "c++" || langLower === "c") {
+    if (errStr.includes("error:")) {
+      return { errorType: "Compilation Error", formattedError: errStr.startsWith("Compilation Error:") ? errStr : `Compilation Error:\n${errStr}` };
+    }
+    if (errStr) {
+      return { errorType: "Runtime Error", formattedError: `Runtime Error:\n${errStr}` };
+    }
+  }
+
+  if (errStr.includes("Compilation Error")) {
+    return { errorType: "Compilation Error", formattedError: errStr };
+  }
+  return { errorType: errStr ? "Runtime Error" : null, formattedError: errStr };
+}
+
+exports.executeCode = async (req, res) => {
+  try {
+    const { language = "python", code = "", input = "", testCases = [], runHidden = false, runOnly = false } = req.body;
+
+    if (!code || !code.trim()) {
+      return res.status(400).json({ error: "Code cannot be empty." });
+    }
+
+    const tempDir = os.tmpdir();
+    const uniqueId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const langLower = language.toLowerCase();
+
+    // Helper: execute code with given input
+    const executeWithInput = async (inputData) => {
+      if (langLower === "python" || langLower === "py") {
+        const scriptPath = path.join(tempDir, `sol_${uniqueId}.py`);
+        fs.writeFileSync(scriptPath, code);
+        let result;
+        try {
+          result = await runCommandWithTimeout("python3", [scriptPath], inputData);
+        } catch (e) {
+          try {
+            result = await runCommandWithTimeout("python", [scriptPath], inputData);
+          } catch (err) {
+            result = { success: false, output: "", error: "Python interpreter not found on server." };
+          }
+        }
+        if (fs.existsSync(scriptPath)) fs.unlinkSync(scriptPath);
+        return result;
+
+      } else if (langLower === "javascript" || langLower === "js") {
+        const vm = require("vm");
+        try {
+          new vm.Script(code);
+        } catch (synErr) {
+          return {
+            success: false,
+            output: "",
+            error: `Syntax Error: ${synErr.message}`,
+            errorType: "Syntax Error"
+          };
+        }
+
+        const scriptPath = path.join(tempDir, `sol_${uniqueId}.js`);
+        fs.writeFileSync(scriptPath, code);
+        const result = await runCommandWithTimeout("node", [scriptPath], inputData, 4000);
+        if (fs.existsSync(scriptPath)) fs.unlinkSync(scriptPath);
+        return result;
+
+      } else if (langLower === "java") {
+        const classMatch = code.match(/public\s+class\s+(\w+)/);
+        const className = classMatch ? classMatch[1] : "Main";
+        const javaDir = path.join(tempDir, `java_${uniqueId}`);
+        if (!fs.existsSync(javaDir)) fs.mkdirSync(javaDir, { recursive: true });
+        const javaFile = path.join(javaDir, `${className}.java`);
+        fs.writeFileSync(javaFile, code);
+
+        const compileResult = await runCommandWithTimeout("javac", [javaFile], "", 10000);
+
+        const isMissingJdk = !compileResult.success && (
+          (compileResult.error && compileResult.error.includes("Unable to locate a Java Runtime")) ||
+          (compileResult.output && compileResult.output.includes("Unable to locate a Java Runtime")) ||
+          (compileResult.error && compileResult.error.includes("command not found"))
+        );
+
+        if (isMissingJdk) {
+          try { fs.rmSync(javaDir, { recursive: true, force: true }); } catch(e) {}
+          // Pre-validate Java Syntax (e.g. mandatory ';' check)
+          const syntaxCheck = validateJavaCode(code);
+          if (!syntaxCheck.valid) {
+            return { success: false, output: "", error: syntaxCheck.error, errorType: "Compilation Error" };
+          }
+          // Fallback: Polyfilled Java Execution Engine for systems without JDK installed
+          try {
+            const polyfill = `
+global.System = {
+  out: {
+    println: function(...args) { console.log(...args); },
+    print: function(...args) { process.stdout.write(args.map(String).join(" ")); },
+    printf: function(fmt, ...args) { console.log(fmt, ...args); }
+  },
+  err: {
+    println: function(...args) { console.error(...args); },
+    print: function(...args) { process.stderr.write(args.map(String).join(" ")); }
+  }
+};
+
+global.Scanner = class {
+  constructor(src) {
+    this.tokens = ${JSON.stringify((inputData || "").trim().split(/\s+/).filter(Boolean))};
+    this.idx = 0;
+  }
+  next() { return this.tokens[this.idx++] || ""; }
+  nextInt() { return parseInt(this.tokens[this.idx++] || "0", 10); }
+  nextDouble() { return parseFloat(this.tokens[this.idx++] || "0"); }
+  nextLine() { return this.tokens.slice(this.idx++).join(" "); }
+  hasNext() { return this.idx < this.tokens.length; }
+};
+`;
+
+            let jsBody = code
+              .replace(/import\s+[^;]+;/g, "")
+              .replace(/public\s+class\s+(\w+)/g, "class $1")
+              .replace(/public\s+static\s+void\s+main\s*\([^)]*\)/g, "static main()")
+              .replace(/\b(int|double|float|long|boolean|char|String|Scanner|var)\s+(\w+)\s*=/g, "let $2 =");
+
+            const fullScriptContent = polyfill + "\n" + jsBody + "\n; try { if (typeof Main !== \"undefined\" && Main.main) Main.main([]); } catch(e) { console.error(\"Runtime Error:\\nException in thread \\\"main\\\" \" + (e.stack || e.message)); }\n";
+
+            const fallbackScript = path.join(tempDir, `java_fallback_${uniqueId}.js`);
+            fs.writeFileSync(fallbackScript, fullScriptContent);
+            const fbResult = await runCommandWithTimeout("node", [fallbackScript], inputData, 4000);
+            if (fs.existsSync(fallbackScript)) fs.unlinkSync(fallbackScript);
+            return fbResult;
+          } catch (fbErr) {
+            return { success: false, output: "", error: `Compilation Error:\n${compileResult.error || compileResult.output}`, errorType: "Compilation Error" };
+          }
+        }
+
+        if (!compileResult.success) {
+          try { fs.rmSync(javaDir, { recursive: true, force: true }); } catch(e) {}
+          return { success: false, output: "", error: `Compilation Error:\n${compileResult.error || compileResult.output}`, errorType: "Compilation Error" };
+        }
+        const runResult = await runCommandWithTimeout("java", ["-cp", javaDir, className], inputData, 5000);
+        try { fs.rmSync(javaDir, { recursive: true, force: true }); } catch(e) {}
+        return runResult;
+
+      } else if (langLower === "cpp" || langLower === "c++") {
+        let cppCode = code;
+        // Fix for macOS / Clang: replace <bits/stdc++.h> with standard C++ headers
+        if (cppCode.includes("bits/stdc++.h")) {
+          const stdHeaders = `#include <iostream>\n#include <vector>\n#include <string>\n#include <algorithm>\n#include <cmath>\n#include <map>\n#include <set>\n#include <queue>\n#include <stack>\n#include <sstream>`;
+          cppCode = cppCode.replace(/#include\s*<bits\/stdc\+\+\.h>/g, stdHeaders);
+        }
+        const srcPath = path.join(tempDir, `sol_${uniqueId}.cpp`);
+        const binPath = path.join(tempDir, `sol_${uniqueId}_bin`);
+        fs.writeFileSync(srcPath, cppCode);
+        const compileResult = await runCommandWithTimeout("g++", ["-o", binPath, srcPath, "-std=c++17"], "", 10000);
+        if (!compileResult.success) {
+          if (fs.existsSync(srcPath)) fs.unlinkSync(srcPath);
+          return { success: false, output: "", error: `Compilation Error:\n${compileResult.error || compileResult.output}`, errorType: "Compilation Error" };
+        }
+        const runResult = await runCommandWithTimeout(binPath, [], inputData, 5000);
+        if (fs.existsSync(srcPath)) fs.unlinkSync(srcPath);
+        if (fs.existsSync(binPath)) fs.unlinkSync(binPath);
+        return runResult;
+
+      } else if (langLower === "c") {
+        const srcPath = path.join(tempDir, `sol_${uniqueId}.c`);
+        const binPath = path.join(tempDir, `sol_${uniqueId}_cbin`);
+        fs.writeFileSync(srcPath, code);
+        const compileResult = await runCommandWithTimeout("gcc", ["-o", binPath, srcPath], "", 10000);
+        if (!compileResult.success) {
+          if (fs.existsSync(srcPath)) fs.unlinkSync(srcPath);
+          return { success: false, output: "", error: `Compilation Error:\n${compileResult.error || compileResult.output}`, errorType: "Compilation Error" };
+        }
+        const runResult = await runCommandWithTimeout(binPath, [], inputData, 5000);
+        if (fs.existsSync(srcPath)) fs.unlinkSync(srcPath);
+        if (fs.existsSync(binPath)) fs.unlinkSync(binPath);
+        return runResult;
+
+      } else {
+        return { success: false, output: "", error: `Unsupported language: ${language}` };
+      }
+    };
+
+    // MODE 1: Run Only — just execute code with raw input, return terminal output
+    if (runOnly) {
+      const result = await executeWithInput((input || "").trim());
+      const formatted = formatLanguageError(langLower, result.error, result.exitCode, result.signal);
+      const finalErrorType = result.errorType || formatted.errorType || null;
+      const finalErrorMsg = formatted.formattedError || (result.error || "").trimEnd();
+
+      return res.json({
+        success: true,
+        runOnly: true,
+        output: (result.output || "").trimEnd(),
+        error: finalErrorMsg,
+        errorType: finalErrorType,
+        exitSuccess: result.success && !finalErrorType
+      });
+    }
+
+function compareOutputValues(actual, expected) {
+  if (!actual && !expected) return true;
+  const act = (actual || "").trim().replace(/\r\n/g, "\n");
+  const exp = (expected || "").trim().replace(/\r\n/g, "\n");
+
+  if (act === exp) return true;
+
+  // 1. Line-by-line whitespace collapsed match
+  const actLines = act.split("\n").map(l => l.trim().replace(/\s+/g, " "));
+  const expLines = exp.split("\n").map(l => l.trim().replace(/\s+/g, " "));
+  if (actLines.join("\n") === expLines.join("\n")) return true;
+
+  // 2. Numeric / Float normalization match (e.g. 10 vs 10.0)
+  const isActNum = !isNaN(Number(act));
+  const isExpNum = !isNaN(Number(exp));
+  if (isActNum && isExpNum) {
+    if (Math.abs(Number(act) - Number(exp)) < 1e-6) return true;
+  }
+
+  // 3. Array / Vector normalization (e.g. [1, 2, 3] vs 1 2 3 or 1, 2, 3)
+  const actTokens = act.replace(/[\[\],]/g, " ").trim().split(/\s+/).filter(Boolean);
+  const expTokens = exp.replace(/[\[\],]/g, " ").trim().split(/\s+/).filter(Boolean);
+  if (actTokens.length > 0 && actTokens.length === expTokens.length) {
+    let allTokensMatch = true;
+    for (let k = 0; k < actTokens.length; k++) {
+      const aTok = actTokens[k];
+      const eTok = expTokens[k];
+      if (aTok === eTok) continue;
+      if (!isNaN(Number(aTok)) && !isNaN(Number(eTok)) && Math.abs(Number(aTok) - Number(eTok)) < 1e-6) continue;
+      allTokensMatch = false;
+      break;
+    }
+    if (allTokensMatch) return true;
+  }
+
+  // 4. Boolean normalization (true/True/1 vs false/False/0)
+  const normBool = (s) => (s === "true" || s === "True" || s === "1" ? "true" : s === "false" || s === "False" || s === "0" ? "false" : s);
+  if (normBool(act) === normBool(exp)) return true;
+
+  return false;
+}
+
+    // MODE 2: Run against Test Cases
+    const targetTestCases = runHidden
+      ? testCases
+      : testCases.filter(tc => !tc.isHidden);
+
+    if (!targetTestCases || targetTestCases.length === 0) {
+      return res.status(400).json({ error: "No test cases provided for evaluation." });
+    }
+
+    const results = [];
+    let totalPassed = 0;
+
+    for (let i = 0; i < targetTestCases.length; i++) {
+      const tc = targetTestCases[i];
+      const cleanInput = (tc.input || "").trim();
+      const cleanExpected = (tc.expectedOutput || "").trim();
+
+      const execResult = await executeWithInput(cleanInput);
+
+      const actualTrimmed = (execResult.output || "").trim();
+      const isPassed = execResult.success && (cleanExpected === "" || compareOutputValues(actualTrimmed, cleanExpected));
+      if (isPassed) totalPassed++;
+
+      results.push({
+        testCaseIndex: i + 1,
+        isHidden: !!tc.isHidden,
+        passed: isPassed,
+        input: tc.isHidden ? "[Hidden]" : tc.input,
+        expectedOutput: tc.isHidden ? "[Hidden]" : tc.expectedOutput,
+        actualOutput: tc.isHidden ? (isPassed ? "[Passed]" : "[Failed]") : actualTrimmed,
+        error: execResult.error || null,
+        explanation: tc.explanation || ""
+      });
+    }
+
+    res.json({
+      success: true,
+      totalTestCases: targetTestCases.length,
+      totalPassed,
+      passPercentage: targetTestCases.length > 0 ? Math.round((totalPassed / targetTestCases.length) * 100) : 0,
+      results
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
 
 
 
