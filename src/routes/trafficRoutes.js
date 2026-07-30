@@ -83,16 +83,37 @@ router.post('/ping', async (req, res) => {
   }
 });
 
-// 2. Public Config Endpoint (used by client interceptor)
+// 2. Public Config Endpoint (used by client interceptor and student lobby)
 router.get('/public-config', async (req, res) => {
   try {
     await ensurePrimaryEnvServer();
     const config = await getOrCreateConfig();
-    const activeServers = await BackendServer.find({ isActive: true, status: 'online' });
+    const allServers = await BackendServer.find().sort({ isPrimary: -1, createdAt: 1 });
+    const activeServers = allServers.filter(s => s.isActive && s.status === 'online');
+    
+    const activeServersCount = Math.max(1, activeServers.length);
+    const maxCapacity = (config.maxCapacity && config.maxCapacity !== 50) ? config.maxCapacity : (activeServersCount * 50);
+
+    const Result = require('../models/Result');
+    const tenMinsAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const activeCandidatesCount = await Result.countDocuments({
+      updatedAt: { $gte: tenMinsAgo },
+      submittedAt: { $exists: false }
+    });
+
+    const isCapacityExceeded = activeCandidatesCount >= Math.floor(maxCapacity * 0.8);
+    const isLobbyActive = config.lobbyMode === 'force_enabled' || (config.lobbyMode === 'auto' && isCapacityExceeded);
+    const queueDelay = isLobbyActive ? Math.min(45, Math.max(5, Math.ceil(((activeCandidatesCount + 1) / maxCapacity) * 15))) : 0;
+
     res.json({
       policy: config.policy,
       cpuThreshold: config.cpuThreshold,
-      servers: activeServers
+      servers: activeServers,
+      maxCapacity,
+      currentActiveCandidates: activeCandidatesCount,
+      isLobbyActive,
+      currentQueueDelay: queueDelay,
+      lobbyMode: config.lobbyMode
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
