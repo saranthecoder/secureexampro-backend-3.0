@@ -164,8 +164,19 @@ exports.createExam = async (req, res) => {
         : req.body.questions;
 
       parsedQuestions = rawQuestions.map(q => {
-        const corrAns = q.correctAnswer ? q.correctAnswer.toString().trim() : "";
-        let qType = q.questionType ? q.questionType.toString().trim().toUpperCase() : "";
+        const questionText = (q["Question"] || q.question || q["question"] || q.title || q["Problem Statement"] || "").toString().trim();
+        const corrAns = (q["Correct Answer"] || q.correctAnswer || q["correctAnswer"] || q.correctAns || "").toString().trim();
+        let qType = (q["Question Type"] || q.questionType || q["questionType"] || "").toString().trim().toUpperCase();
+        
+        const optA = q["Option A"] || q.optionA || q["OptionA"] || (q.options?.A ? q.options.A : "");
+        const optB = q["Option B"] || q.optionB || q["OptionB"] || (q.options?.B ? q.options.B : "");
+        const optC = q["Option C"] || q.optionC || q["OptionC"] || (q.options?.C ? q.options.C : "");
+        const optD = q["Option D"] || q.optionD || q["OptionD"] || (q.options?.D ? q.options.D : "");
+
+        const marksVal = Number(q["Marks"] || q.marks || 1);
+        const negVal = Number(q["Negative Marks"] || q.negativeMarks || 0);
+        const secVal = (q["Section"] || q.section || "General").toString().trim();
+
         let isMulti = false;
         if (qType === "MSQ") {
           isMulti = true;
@@ -178,21 +189,21 @@ exports.createExam = async (req, res) => {
           qType = isMulti ? "MSQ" : "MCQ";
         }
         return {
-          question: q.question,
+          question: questionText,
           options: {
-            A: q.options?.A ? q.options.A.toString() : "",
-            B: q.options?.B ? q.options.B.toString() : "",
-            C: q.options?.C ? q.options.C.toString() : "",
-            D: q.options?.D ? q.options.D.toString() : ""
+            A: optA ? optA.toString().trim() : "",
+            B: optB ? optB.toString().trim() : "",
+            C: optC ? optC.toString().trim() : "",
+            D: optD ? optD.toString().trim() : ""
           },
           correctAnswer: corrAns,
-          marks: q.marks ? Number(q.marks) : 1,
-          negativeMarks: q.negativeMarks ? Number(q.negativeMarks) : 0,
+          marks: isNaN(marksVal) ? 1 : marksVal,
+          negativeMarks: isNaN(negVal) ? 0 : negVal,
           isMultipleCorrect: isMulti,
           questionType: qType,
-          section: q.section ? q.section.trim() : "General",
-          codeSnippet: q.codeSnippet ? q.codeSnippet.toString().trim() : "",
-          imageUrl: q.imageUrl ? q.imageUrl.toString().trim() : ""
+          section: secVal,
+          codeSnippet: (q["Code Snippet"] || q.codeSnippet || "").toString().trim(),
+          imageUrl: (q["Image URL"] || q.imageUrl || "").toString().trim()
         };
       });
     } else if (req.body.onlineCodingConfig) {
