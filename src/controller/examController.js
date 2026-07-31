@@ -2227,22 +2227,31 @@ function compareOutputValues(actual, expected) {
 
     const results = [];
     let totalPassed = 0;
+    let totalMarksObtained = 0;
+    let totalMaxMarks = 0;
 
     for (let i = 0; i < targetTestCases.length; i++) {
       const tc = targetTestCases[i];
       const cleanInput = (tc.input || "").trim();
       const cleanExpected = (tc.expectedOutput || "").trim();
+      const tcWeight = Number(tc.weightage || tc.marks || 25);
+      totalMaxMarks += tcWeight;
 
       const execResult = await executeWithInput(cleanInput);
 
       const actualTrimmed = (execResult.output || "").trim();
       const isPassed = execResult.success && (cleanExpected === "" || compareOutputValues(actualTrimmed, cleanExpected));
-      if (isPassed) totalPassed++;
+      if (isPassed) {
+        totalPassed++;
+        totalMarksObtained += tcWeight;
+      }
 
       results.push({
         testCaseIndex: i + 1,
         isHidden: !!tc.isHidden,
         passed: isPassed,
+        weightage: tcWeight,
+        marksObtained: isPassed ? tcWeight : 0,
         input: tc.isHidden ? "[Hidden]" : tc.input,
         expectedOutput: tc.isHidden ? "[Hidden]" : tc.expectedOutput,
         actualOutput: tc.isHidden ? (isPassed ? "[Passed]" : "[Failed]") : actualTrimmed,
@@ -2255,6 +2264,8 @@ function compareOutputValues(actual, expected) {
       success: true,
       totalTestCases: targetTestCases.length,
       totalPassed,
+      totalMarksObtained,
+      totalMaxMarks,
       passPercentage: targetTestCases.length > 0 ? Math.round((totalPassed / targetTestCases.length) * 100) : 0,
       results
     });
