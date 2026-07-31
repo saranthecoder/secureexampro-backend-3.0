@@ -233,9 +233,9 @@ exports.createExam = async (req, res) => {
     const exam = await Exam.create({
       title,
       examCode: examCodeUpper,
-      duration,
-      startTime,
-      endTime,
+      duration: Number(duration) || 60,
+      startTime: (startTime && !isNaN(new Date(startTime).getTime())) ? new Date(startTime) : new Date(),
+      endTime: (endTime && !isNaN(new Date(endTime).getTime())) ? new Date(endTime) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       questions: parsedQuestions,
       createdBy: createdBy || adminEmail || "",
       isResultReleased: false,
@@ -441,18 +441,31 @@ exports.getExamByCode = async (req, res) => {
     // Send Questions (without answers)
     // ===============================
 
-    const questionsForStudent = exam.questions.map((q) => ({
-      _id: q._id,
-      question: q.question,
-      options: q.options,
-      section: q.section || "General",
-      codeSnippet: q.codeSnippet || "",
-      imageUrl: q.imageUrl || "",
-      isMultipleCorrect: q.isMultipleCorrect || false,
-      questionType: q.questionType || (q.isMultipleCorrect ? "MSQ" : "MCQ"),
-      negativeMarks: q.negativeMarks || 0,
-      marks: q.marks || 1,
-    }));
+    const questionsForStudent = (exam.questions || []).map((q) => {
+      const qText = (q.question || q["Question"] || q.title || q["Problem Statement"] || "").toString().trim();
+      const optA = q.options?.A || q["Option A"] || q.optionA || (q.options instanceof Map ? q.options.get("A") : "") || "";
+      const optB = q.options?.B || q["Option B"] || q.optionB || (q.options instanceof Map ? q.options.get("B") : "") || "";
+      const optC = q.options?.C || q["Option C"] || q.optionC || (q.options instanceof Map ? q.options.get("C") : "") || "";
+      const optD = q.options?.D || q["Option D"] || q.optionD || (q.options instanceof Map ? q.options.get("D") : "") || "";
+
+      return {
+        _id: q._id || q.id || Math.random().toString(36).substring(7),
+        question: qText,
+        options: {
+          A: optA ? optA.toString().trim() : "",
+          B: optB ? optB.toString().trim() : "",
+          C: optC ? optC.toString().trim() : "",
+          D: optD ? optD.toString().trim() : ""
+        },
+        section: (q.section || q["Section"] || "General").toString().trim(),
+        codeSnippet: (q.codeSnippet || q["Code Snippet"] || "").toString().trim(),
+        imageUrl: (q.imageUrl || q["Image URL"] || "").toString().trim(),
+        isMultipleCorrect: q.isMultipleCorrect || false,
+        questionType: (q.questionType || q["Question Type"] || (q.isMultipleCorrect ? "MSQ" : "MCQ")).toString().trim().toUpperCase(),
+        negativeMarks: Number(q.negativeMarks || q["Negative Marks"] || 0),
+        marks: Number(q.marks || q["Marks"] || 1),
+      };
+    });
 
     res.json({
       title: exam.title,

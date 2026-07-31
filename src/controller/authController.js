@@ -27,23 +27,8 @@ exports.studentLogin = async (req, res) => {
     });
 
     if (!user) {
-      // If student was not pre-imported by admin, allow auto-creation with default initial PIN for convenience
-      const cleanEmail = email ? email.toLowerCase().trim() : `${idToSearch.toLowerCase()}@student.local`;
-      const cleanName = name && name.trim() ? name.trim() : idToSearch;
-
-      user = await User.create({
-        name: cleanName,
-        email: cleanEmail,
-        rollNumber: idToSearch,
-        registerId: idToSearch,
-        pin: cleanPin,
-        role: "student",
-        isPinUpdated: false
-      });
-
-      return res.json({
-        message: "Student logged in successfully",
-        user
+      return res.status(403).json({
+        message: "Student account not found. Direct self-registration is disabled. Only candidates provisioned by the System Admin are permitted to log in."
       });
     }
 
